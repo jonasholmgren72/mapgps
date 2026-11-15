@@ -1,0 +1,1668 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#B8146B">
+<title>Min position på kartan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #F7F8F5;
+    --ink: #15221D;
+    --muted: #55655D;
+    --line: #C1C9C3;
+    --accent: #B8146B;
+    --on-accent: #FFFFFF;
+    --map-bg: #DCE0DB;
+    --ok: #1F8A4C;
+    --warn: #B7791F;
+    --bad: #C0392B;
+    --off: #8A978F;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #19231F;
+      --ink: #E9EFEB;
+      --muted: #9FB0A7;
+      --line: #35453D;
+      --accent: #FF5CAB;
+      --on-accent: #22000F;
+      --map-bg: #0E1411;
+      --ok: #4CC983;
+      --warn: #E5B04F;
+      --bad: #FF7B6B;
+      --off: #6F7F77;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #19231F;
+    --ink: #E9EFEB;
+    --muted: #9FB0A7;
+    --line: #35453D;
+    --accent: #FF5CAB;
+    --on-accent: #22000F;
+    --map-bg: #0E1411;
+    --ok: #4CC983;
+    --warn: #E5B04F;
+    --bad: #FF7B6B;
+    --off: #6F7F77;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html {
+    height: 100%;
+    scroll-padding-top: env(safe-area-inset-top, 0px);
+    background: var(--map-bg);
+  }
+  body {
+    position: relative;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: var(--map-bg);
+    color: var(--ink);
+    font-family: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.4;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  [hidden] { display: none !important; }
+
+  #stage { position: absolute; inset: 0; }
+  #map { display: block; touch-action: none; cursor: grab; }
+
+  .btn {
+    font: inherit;
+    font-weight: 700;
+    min-height: 52px;
+    padding: 0 16px;
+    border-radius: 12px;
+    border: 1.5px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .btn:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .btn[aria-pressed="true"], .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .btn.small { min-height: 40px; padding: 0 12px; font-size: 15px; }
+
+  #hud {
+    position: absolute;
+    top: 8px; left: 8px; right: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
+  }
+  .hudrow { display: flex; align-items: center; gap: 10px; }
+  .hudrow #gpsLabel { flex: 1; font-weight: 700; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--off); border: 2px solid var(--surface); box-shadow: 0 0 0 1.5px var(--off); flex: none; }
+  .dot[data-kind="ok"] { background: var(--ok); box-shadow: 0 0 0 1.5px var(--ok); }
+  .dot[data-kind="weak"] { background: var(--warn); box-shadow: 0 0 0 1.5px var(--warn); }
+  .dot[data-kind="wait"] { background: var(--warn); box-shadow: 0 0 0 1.5px var(--warn); }
+  .dot[data-kind="err"] { background: var(--bad); box-shadow: 0 0 0 1.5px var(--bad); }
+  .coords { margin-top: 8px; font-variant-numeric: tabular-nums; font-size: 15px; color: var(--ink); }
+  .coords div + div { color: var(--muted); }
+  .outside { margin-top: 8px; padding: 8px 10px; border-radius: 10px; border-left: 4px solid var(--accent); background: var(--map-bg); font-weight: 700; }
+  .err { margin-top: 8px; font-size: 14px; color: var(--muted); }
+
+  #scale {
+    position: absolute; left: 12px; bottom: 84px;
+    display: flex; flex-direction: column; gap: 3px;
+    padding: 5px 9px 6px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    font-size: 13px; font-weight: 700;
+  }
+  #scaleBar { height: 7px; border: 2px solid var(--ink); border-top: none; }
+
+  #busy { position: absolute; left: 12px; bottom: 132px; padding: 5px 9px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; font-weight: 700; }
+  #zoom { position: absolute; right: 8px; bottom: 84px; display: flex; flex-direction: column; gap: 8px; }
+  #zoom .btn { width: 52px; padding: 0; font-size: 28px; line-height: 1; }
+
+  #toolbar { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; gap: 8px; }
+  #toolbar .btn { flex: 1; padding: 0 8px; }
+
+  #start {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+    background: var(--map-bg);
+    overflow-y: auto;
+  }
+  .panel { width: 100%; max-width: 420px; }
+  .panel svg { display: block; width: 132px; height: auto; margin: 0 0 18px; }
+  h1 { margin: 0 0 8px; font-size: 30px; line-height: 1.15; font-weight: 700; }
+  .panel p { margin: 0 0 18px; color: var(--muted); max-width: 60ch; }
+  .panel .btn.primary { width: 100%; font-size: 18px; min-height: 58px; }
+  .panel .btn + .btn { margin-top: 10px; width: 100%; }
+  .field { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; font-weight: 700; }
+  .field select, .field input {
+    font: inherit; font-weight: 400; min-height: 48px; padding: 0 12px;
+    border-radius: 10px; border: 1.5px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  #startMsg { white-space: pre-line; margin: 0 0 16px; padding: 10px 12px; border-left: 4px solid var(--accent); background: var(--surface); border-radius: 0 10px 10px 0; color: var(--ink); }
+  .fine { font-size: 14px; margin-top: 16px !important; margin-bottom: 0 !important; }
+</style>
+</head>
+<body>
+
+<main id="stage">
+  <canvas id="map" role="img" aria-label="Karta med din position"></canvas>
+</main>
+
+<section id="hud" hidden aria-live="polite">
+  <div class="hudrow">
+    <span class="dot" id="dot" data-kind="off"></span>
+    <span id="gpsLabel">GPS av</span>
+    <button class="btn small" id="gpsBtn" type="button">Starta GPS</button>
+  </div>
+  <div class="coords" id="coords" hidden>
+    <div id="coordLL"></div>
+    <div id="coordProj"></div>
+  </div>
+  <div class="outside" id="outside" hidden></div>
+  <div class="err" id="gpsHint" hidden></div>
+</section>
+
+<div id="scale" hidden><div id="scaleBar"></div><span id="scaleLabel"></span></div>
+
+<div id="busy" hidden>Skärper kartan…</div>
+
+<div id="zoom" hidden>
+  <button class="btn" id="zin" type="button" aria-label="Zooma in">+</button>
+  <button class="btn" id="zout" type="button" aria-label="Zooma ut">&minus;</button>
+</div>
+
+<nav id="toolbar" hidden>
+  <button class="btn" id="followBtn" type="button" aria-pressed="false">Följ mig</button>
+  <button class="btn" id="fitBtn" type="button">Hela kartan</button>
+  <button class="btn" id="changeBtn" type="button">Byt karta</button>
+</nav>
+
+<section id="start">
+  <div class="panel">
+    <svg viewBox="0 0 132 100" aria-hidden="true" fill="none">
+      <ellipse cx="66" cy="50" rx="62" ry="44" stroke="var(--line)" stroke-width="2"/>
+      <ellipse cx="66" cy="50" rx="46" ry="31" stroke="var(--line)" stroke-width="2" transform="rotate(-8 66 50)"/>
+      <ellipse cx="66" cy="50" rx="30" ry="18" stroke="var(--line)" stroke-width="2" transform="rotate(-16 66 50)"/>
+      <circle cx="74" cy="46" r="20" fill="var(--accent)" fill-opacity=".16" stroke="var(--accent)" stroke-opacity=".55" stroke-width="1.5"/>
+      <circle cx="74" cy="46" r="9" fill="var(--surface)"/>
+      <circle cx="74" cy="46" r="6.5" fill="var(--accent)"/>
+    </svg>
+    <h1>Min position på kartan</h1>
+    <p id="startText">Välj en GeoTIFF, en OCAD-karta (.ocd), eller en kartbild (PNG eller JPG) tillsammans med dess världsfil. Kartan visas på skärmen och GPS:en visar var du befinner dig.</p>
+    <div id="startMsg" role="alert" hidden></div>
+    <label class="field" id="crsField">Koordinatsystem (om det saknas i filen)
+      <select id="crs">
+        <option value="3006">SWEREF 99 TM (EPSG:3006)</option>
+        <option value="3021">RT90 2,5 gon V (EPSG:3021)</option>
+        <option value="4326">WGS 84 (EPSG:4326)</option>
+        <option value="3857">Web Mercator (EPSG:3857)</option>
+        <option value="other">Annan EPSG-kod…</option>
+      </select>
+    </label>
+    <label class="field" id="crsOtherField" hidden>EPSG-kod
+      <input id="crsOther" type="number" inputmode="numeric" placeholder="till exempel 3011">
+    </label>
+    <label class="field" id="qualityField">Detaljnivå
+      <select id="quality">
+        <option value="9000000">Normal (snabbare)</option>
+        <option value="16000000">Hög (skarpast, tar mer minne)</option>
+      </select>
+    </label>
+    <button class="btn primary" id="pickBtn" type="button">Välj kartfil(er)</button>
+    <button class="btn" id="backBtn" type="button" hidden>Tillbaka till kartan</button>
+    <p class="fine">Stora GeoTIFF-filer visas först i lägre upplösning och skärps när du zoomar in. Filerna läses bara i telefonen och skickas inte någon annanstans. Koordinatsystem som stöds är bland annat SWEREF 99 TM, RT90, WGS 84, Web Mercator och UTM.</p>
+    <details class="fine">
+      <summary style="cursor:pointer;font-weight:700;color:var(--ink)">Har du en OCD-fil (OCAD)?</summary>
+      <p style="margin-top:8px">Välj .ocd-filen direkt. Det fungerar för OCAD 10, 11, 12 och 2018, och kartan måste ha verkliga koordinater (Real World Coordinates). Texter visas inte ännu, och dolda symboler i OCAD hoppas över. Äldre OCAD-filer (version 9 och tidigare) kan inte läsas.</p>
+    </details>
+  </div>
+</section>
+
+<input type="file" id="file" multiple hidden>
+
+<script>
+/* OCD-läsare för OCAD 10, 11, 12 och 2018. Bygger ritlager (en uppsättning banor per färg)
+   i pappersmått (1/100 mm, y uppåt). Fungerar i webbläsare och i Node. */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.OCD = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  const BASE = 796;          // storlek på symbolhuvudet
+  const TAU = Math.PI * 2;
+
+  function parse(buffer, opt) {
+    opt = opt || {};
+    const dv = new DataView(buffer);
+    const u8 = o => dv.getUint8(o), u16 = o => dv.getUint16(o, true), i16 = o => dv.getInt16(o, true);
+    const u32 = o => dv.getUint32(o, true), i32 = o => dv.getInt32(o, true);
+    if (buffer.byteLength < 64 || u16(0) !== 0x0CAD) throw new Error('Filen är ingen OCAD-fil.');
+    const version = u16(4);
+    if (version < 10) throw new Error('OCAD-versionen (' + version + ') stöds inte. Spara kartan som OCAD 10 eller senare.');
+    const firstSym = u32(8), firstObj = u32(12), firstStr = u32(0x20);
+    const utf8 = new TextDecoder('utf-8');
+
+    /* ---------- Index ---------- */
+    const symPos = [];
+    for (let p = firstSym; p; p = u32(p)) for (let i = 0; i < 256; i++) { const q = u32(p + 4 + i * 4); if (q) symPos.push(q); }
+    const strings = [];
+    for (let p = firstStr; p; p = u32(p)) {
+      for (let i = 0; i < 256; i++) {
+        const o = p + 4 + i * 16, pos = u32(o);
+        if (!pos) continue;
+        const len = u32(o + 4), type = i32(o + 8);
+        let e = pos; const lim = Math.min(pos + len, buffer.byteLength);
+        while (e < lim && u8(e) !== 0) e++;
+        strings.push({ type, text: utf8.decode(new Uint8Array(buffer, pos, e - pos)) });
+      }
+    }
+    const objIdx = [];
+    for (let p = firstObj; p; p = u32(p)) {
+      for (let i = 0; i < 256; i++) { const o = p + 4 + i * 40, pos = u32(o + 16); if (pos) objIdx.push({ pos, sym: i32(o + 24), type: u8(o + 28), status: u8(o + 30) }); }
+    }
+
+    /* ---------- Parametersträngar ---------- */
+    function fields(text) {
+      const t = text.split('\t'), f = { name: t[0] };
+      for (let i = 1; i < t.length; i++) if (t[i].length) { const k = t[i][0]; if (!(k in f)) f[k] = t[i].slice(1); else (f[k + '_all'] = f[k + '_all'] || [f[k]]).push(t[i].slice(1)); }
+      return f;
+    }
+    const spots = {};
+    for (const s of strings) if (s.type === 10) { const f = fields(s.text); spots[f.name] = f; }
+    const colors = [];            // i prioritetsordning, överst först
+    for (const s of strings) {
+      if (s.type !== 9) continue;
+      const f = fields(s.text);
+      if (f.n === undefined) continue;
+      let c = +f.c || 0, m = +f.m || 0, y = +f.y || 0, k = +f.k || 0;
+      if (f.c === undefined && f.m === undefined && f.y === undefined && f.k === undefined && f.s) {
+        const names = [].concat(f.s_all || f.s), pcts = [].concat(f.p_all || f.p || 100);
+        c = m = y = k = 0;
+        names.forEach((nm, i) => { const sp = spots[nm]; if (!sp) return; const w = (+pcts[i] || 100) / 100; c += (+sp.c || 0) * w; m += (+sp.m || 0) * w; y += (+sp.y || 0) * w; k += (+sp.k || 0) * w; });
+      }
+      const cl = v => Math.max(0, Math.min(100, v)) / 100;
+      c = cl(c); m = cl(m); y = cl(y); k = cl(k);
+      const rgb = [Math.round(255 * (1 - c) * (1 - k)), Math.round(255 * (1 - m) * (1 - k)), Math.round(255 * (1 - y) * (1 - k))];
+      colors.push({ n: +f.n, name: f.name, rgb, alpha: f.t !== undefined ? Math.max(0, Math.min(1, (+f.t) / 100)) : 1 });
+    }
+    const colorIndex = new Map(); colors.forEach((c, i) => colorIndex.set(c.n, i));
+
+    /* ---------- Georeferens ---------- */
+    let geo = null;
+    for (const s of strings) if (s.type === 1039) { const f = fields(s.text); geo = { scale: +f.m || 10000, offX: +f.x || 0, offY: +f.y || 0, angle: +f.a || 0, real: f.r === '1', epsg: f.e ? +f.e : null, ocadCs: f.i ? +f.i : null }; }
+    let printArea = null;
+    for (const s of strings) if (s.type === 1026) { const f = fields(s.text); if (f.L !== undefined) printArea = { minX: +f.L * 100, minY: +f.B * 100, maxX: +f.R * 100, maxY: +f.T * 100 }; }
+
+    /* ---------- Symboler ---------- */
+    function readElements(p, bytes) {
+      const els = []; const end = p + bytes;
+      while (p + 16 <= end) {
+        const type = u16(p), flags = u16(p + 2), color = u16(p + 4), lw = u16(p + 6), diam = u16(p + 8), n = u16(p + 10);
+        const pts = [];
+        for (let i = 0; i < n; i++) { const x = i32(p + 16 + i * 8), y = i32(p + 20 + i * 8); pts.push({ x: x >> 8, y: y >> 8, fx: x & 255, fy: y & 255 }); }
+        els.push({ type, flags, color, lw, diam, pts });
+        p += 16 + n * 8;
+      }
+      return els;
+    }
+    const symbols = new Map();
+    for (const p of symPos) {
+      if (p + BASE > buffer.byteLength) continue;
+      const num = u32(p + 4), type = u8(p + 8);
+      const s = { num, type, status: u8(p + 11) };
+      if (type === 1) {
+        s.els = readElements(p + BASE + 4, u16(p + BASE) * 8);
+      } else if (type === 2) {
+        const o = p + BASE;
+        s.color = u16(o); s.width = u16(o + 2); s.style = u16(o + 4);
+        s.distStart = i16(o + 6); s.distEnd = i16(o + 8); s.mainLen = i16(o + 10); s.endLen = i16(o + 12);
+        s.mainGap = i16(o + 14); s.secGap = i16(o + 16); s.endGap = i16(o + 18); s.minSym = i16(o + 20);
+        s.numPrim = i16(o + 22); s.primDist = i16(o + 24);
+        s.dblMode = u16(o + 26); s.dblFlags = u16(o + 28); s.dblColor = u16(o + 30); s.dblLeftColor = u16(o + 32); s.dblRightColor = u16(o + 34);
+        s.dblWidth = i16(o + 36); s.dblLeftW = i16(o + 38); s.dblRightW = i16(o + 40);
+        const sizes = [u16(o + 64), u16(o + 66), u16(o + 68), u16(o + 70), u16(o + 72)];
+        let q = o + 76;
+        s.primEls = readElements(q, sizes[0] * 8); q += sizes[0] * 8;
+        s.secEls = readElements(q, sizes[1] * 8); q += sizes[1] * 8;
+        s.cornerEls = readElements(q, sizes[2] * 8); q += sizes[2] * 8;
+        s.startEls = readElements(q, sizes[3] * 8); q += sizes[3] * 8;
+        s.endEls = readElements(q, sizes[4] * 8);
+      } else if (type === 3) {
+        const o = p + BASE;
+        s.border = u32(o); const c = o + 4;
+        s.fillColor = u16(c); s.hatchMode = u16(c + 2); s.hatchColor = u16(c + 4); s.hatchW = u16(c + 6); s.hatchDist = u16(c + 8);
+        s.hatchA1 = i16(c + 10); s.hatchA2 = i16(c + 12);
+        s.fillOn = u8(c + 14); s.borderOn = u8(c + 15); s.structMode = u8(c + 16);
+        s.structW = u16(c + 18); s.structH = u16(c + 20); s.structAngle = i16(c + 22);
+        s.els = readElements(o + 36, u16(o + 34) * 8);
+      }
+      symbols.set(num, s);
+    }
+
+    /* ---------- Ritlager ---------- */
+    const layers = colors.map(c => ({ n: c.n, rgb: c.rgb, alpha: c.alpha, fills: [], strokes: new Map() }));
+    function layerOf(n) { const i = colorIndex.get(n); return i === undefined ? null : layers[i]; }
+    const fmt = v => Math.round(v);
+    function pathStr(poly, close) {
+      let d = 'M' + fmt(poly[0]) + ' ' + fmt(poly[1]);
+      for (let i = 2; i < poly.length; i += 2) d += 'L' + fmt(poly[i]) + ' ' + fmt(poly[i + 1]);
+      return close ? d + 'Z' : d;
+    }
+    function area2(r) { let a = 0; for (let i = 0, n = r.length; i < n; i += 2) { const j = (i + 2) % n; a += r[i] * r[j + 1] - r[j] * r[i + 1]; } return a / 2; }
+    function addFill(colorN, rings) {
+      const L = layerOf(colorN); if (!L) return;
+      let d = '', first = true;
+      for (const r0 of rings) {
+        if (r0.length < 6) continue;
+        let r = r0; const a = area2(r);
+        if ((first && a < 0) || (!first && a > 0)) { r = []; for (let i = r0.length - 2; i >= 0; i -= 2) r.push(r0[i], r0[i + 1]); }
+        d += pathStr(r, true); first = false;
+      }
+      if (d) L.fills.push(d);
+    }
+    function addStroke(colorN, w, cap, join, dash, polys, closed) {
+      const L = layerOf(colorN); if (!L || !(w > 0)) return;
+      const key = w + '|' + cap + '|' + join + '|' + (dash ? dash.join(',') : '');
+      let b = L.strokes.get(key);
+      if (!b) { b = { w, cap, join, dash, pieces: [] }; L.strokes.set(key, b); }
+      let d = ''; for (const p of polys) if (p.length >= 4) d += pathStr(p, closed);
+      if (d) b.pieces.push(d);
+    }
+    function circlePoly(cx, cy, r) {
+      const n = r < 60 ? 12 : r < 300 ? 20 : 32, out = [];
+      for (let i = 0; i < n; i++) { const a = TAU * i / n; out.push(cx + r * Math.cos(a), cy + r * Math.sin(a)); }
+      return out;
+    }
+    function xform(pts, x, y, c, s) { const out = []; for (const p of pts) out.push(x + p.x * c - p.y * s, y + p.x * s + p.y * c); return out; }
+
+    /* Bezier till polylinje. pts: [{x,y,fx,fy}] */
+    function flatten(pts) {
+      const out = [pts[0].x, pts[0].y]; let i = 1; const n = pts.length;
+      while (i < n) {
+        if ((pts[i].fx & 1) && i + 2 < n && (pts[i + 1].fx & 2)) {
+          const x0 = out[out.length - 2], y0 = out[out.length - 1], a = pts[i], b = pts[i + 1], c = pts[i + 2];
+          const len = Math.hypot(a.x - x0, a.y - y0) + Math.hypot(b.x - a.x, b.y - a.y) + Math.hypot(c.x - b.x, c.y - b.y);
+          const steps = Math.max(4, Math.min(24, Math.ceil(len / 150)));
+          for (let k = 1; k <= steps; k++) {
+            const t = k / steps, u = 1 - t;
+            out.push(u * u * u * x0 + 3 * u * u * t * a.x + 3 * u * t * t * b.x + t * t * t * c.x,
+                     u * u * u * y0 + 3 * u * u * t * a.y + 3 * u * t * t * b.y + t * t * t * c.y);
+          }
+          i += 3;
+        } else { out.push(pts[i].x, pts[i].y); i++; }
+      }
+      return out;
+    }
+
+    function drawElements(els, x, y, ang) {
+      const c = Math.cos(ang), s = Math.sin(ang);
+      for (const e of els) {
+        if (e.type === 4) { const r = e.diam / 2; if (r > 0 && e.pts.length) { const q = xform(e.pts.slice(0, 1), x, y, c, s); addFill(e.color, [circlePoly(q[0], q[1], r)]); } }
+        else if (e.type === 3) {
+          const r = (e.diam - e.lw) / 2; if (e.pts.length && r > 0) { const q = xform(e.pts.slice(0, 1), x, y, c, s); addStroke(e.color, e.lw, 'butt', 'round', null, [circlePoly(q[0], q[1], r)], true); }
+        } else if (e.type === 2) {
+          const rings = []; let cur = [];
+          e.pts.forEach((p, i) => { if (i && (p.fy & 2)) { rings.push(cur); cur = []; } cur.push(p); });
+          rings.push(cur);
+          addFill(e.color, rings.filter(r => r.length > 2).map(r => xform(flatten(r).length ? flattenToPts(r) : r, x, y, c, s)));
+        } else if (e.type === 1) {
+          if (e.pts.length < 2) continue;
+          const fl = flatten(e.pts), out = [];
+          for (let i = 0; i < fl.length; i += 2) out.push(x + fl[i] * c - fl[i + 1] * s, y + fl[i] * s + fl[i + 1] * c);
+          addStroke(e.color, e.lw, 'round', 'round', null, [out], false);
+        }
+      }
+    }
+    function flattenToPts(r) { const f = flatten(r), o = []; for (let i = 0; i < f.length; i += 2) o.push({ x: f[i], y: f[i + 1] }); return o; }
+
+    /* Hjälpare för polylinjer */
+    function cumLen(p) { const c = [0]; for (let i = 2; i < p.length; i += 2) c.push(c[c.length - 1] + Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1])); return c; }
+    function at(p, cum, s) {
+      let lo = 0, hi = cum.length - 1;
+      if (s <= 0) { lo = 0; } else if (s >= cum[hi]) { lo = hi - 1; } else { while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cum[m] <= s) lo = m; else hi = m; } }
+      const a = lo, b = lo + 1, seg = cum[b] - cum[a] || 1, t = (s - cum[a]) / seg;
+      const x0 = p[a * 2], y0 = p[a * 2 + 1], x1 = p[b * 2], y1 = p[b * 2 + 1];
+      return { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t, a: Math.atan2(y1 - y0, x1 - x0) };
+    }
+    function offsetLine(p, d) {
+      const n = p.length / 2, out = [];
+      for (let i = 0; i < n; i++) {
+        let nx = 0, ny = 0;
+        if (i > 0) { const dx = p[i * 2] - p[i * 2 - 2], dy = p[i * 2 + 1] - p[i * 2 - 1], l = Math.hypot(dx, dy) || 1; nx += -dy / l; ny += dx / l; }
+        if (i < n - 1) { const dx = p[i * 2 + 2] - p[i * 2], dy = p[i * 2 + 3] - p[i * 2 + 1], l = Math.hypot(dx, dy) || 1; nx += -dy / l; ny += dx / l; }
+        const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+        let k = 1;
+        if (i > 0 && i < n - 1) { const dx0 = p[i * 2] - p[i * 2 - 2], dy0 = p[i * 2 + 1] - p[i * 2 - 1], dx1 = p[i * 2 + 2] - p[i * 2], dy1 = p[i * 2 + 3] - p[i * 2 + 1]; const l0 = Math.hypot(dx0, dy0) || 1, l1 = Math.hypot(dx1, dy1) || 1; const cosh = (dx0 * dx1 + dy0 * dy1) / (l0 * l1); k = Math.min(2, 1 / Math.sqrt(Math.max(0.25, (1 + cosh) / 2))); }
+        out.push(p[i * 2] + nx * d * k, p[i * 2 + 1] + ny * d * k);
+      }
+      return out;
+    }
+
+    function drawLine(sym, poly, closed, cornerIdx) {
+      if (poly.length < 4) return;
+      const cap = sym.style === 1 ? 'round' : (sym.style & 2) ? 'square' : 'butt';
+      const join = (sym.style & 4) ? 'miter' : (sym.style & 1) ? 'round' : 'bevel';
+      const dashed = sym.mainLen > 0 && sym.mainGap > 0;
+      if (sym.width > 0) addStroke(sym.color, sym.width, cap, join, dashed ? [sym.mainLen, sym.mainGap] : null, [poly], closed);
+      if (sym.dblMode > 0 && sym.dblWidth > 0) {
+        const half = sym.dblWidth / 2;
+        if (sym.dblFlags & 1) addStroke(sym.dblColor, sym.dblWidth, 'butt', 'round', null, [poly], closed);
+        const dash = sym.dblMode >= 2 && sym.mainLen > 0 && sym.mainGap > 0 ? [sym.mainLen, sym.mainGap] : null;
+        if (sym.dblLeftW > 0) addStroke(sym.dblLeftColor, sym.dblLeftW, 'butt', 'round', sym.dblMode >= 2 ? dash : null, [offsetLine(poly, half)], closed);
+        if (sym.dblRightW > 0) addStroke(sym.dblRightColor, sym.dblRightW, 'butt', 'round', sym.dblMode >= 4 ? dash : null, [offsetLine(poly, -half)], closed);
+      }
+      const cum = cumLen(poly), total = cum[cum.length - 1];
+      if (total <= 0) return;
+      if (sym.primEls.length && sym.mainLen > 0 && !dashed) {
+        const usable = total - sym.distStart - sym.distEnd;
+        if (usable > 0) {
+          const n = Math.max(1, Math.round(usable / sym.mainLen)), step = usable / n;
+          const num = Math.max(1, sym.numPrim || 1);
+          for (let k = 0; k <= (closed ? n - 1 : n); k++) {
+            const s0 = sym.distStart + step * k;
+            for (let j = 0; j < num; j++) { const s = s0 + (j - (num - 1) / 2) * (sym.primDist || 0); if (s < 0 || s > total) continue; const q = at(poly, cum, s); drawElements(sym.primEls, q.x, q.y, q.a); }
+          }
+        }
+      }
+      if (sym.startEls.length) { const q = at(poly, cum, 0); drawElements(sym.startEls, q.x, q.y, q.a); }
+      if (sym.endEls.length) { const q = at(poly, cum, total); drawElements(sym.endEls, q.x, q.y, q.a); }
+      if (sym.cornerEls.length && cornerIdx) for (const ci of cornerIdx) { if (ci <= 0 || ci >= poly.length / 2 - 1) continue; const q = at(poly, cum, cum[ci]); drawElements(sym.cornerEls, q.x, q.y, q.a); }
+    }
+
+    /* Scanlinje-hjälp för ytor: even-odd. rings är platta [x,y,...] */
+    function scanRows(rings, ang, y0step, yoff, cb) {
+      const c = Math.cos(-ang), s = Math.sin(-ang);
+      const rr = rings.map(r => { const o = []; for (let i = 0; i < r.length; i += 2) o.push(r[i] * c - r[i + 1] * s, r[i] * s + r[i + 1] * c); return o; });
+      let minY = Infinity, maxY = -Infinity;
+      for (const r of rr) for (let i = 1; i < r.length; i += 2) { if (r[i] < minY) minY = r[i]; if (r[i] > maxY) maxY = r[i]; }
+      const first = Math.ceil((minY - yoff) / y0step), last = Math.floor((maxY - yoff) / y0step);
+      if (last - first > 6000) return;
+      const cb2 = Math.cos(ang), sb2 = Math.sin(ang);
+      for (let row = first; row <= last; row++) {
+        const y = row * y0step + yoff, xs = [];
+        for (const r of rr) {
+          const n = r.length / 2;
+          for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n, ya = r[i * 2 + 1], yb = r[j * 2 + 1];
+            if ((ya <= y && yb > y) || (yb <= y && ya > y)) xs.push(r[i * 2] + (y - ya) / (yb - ya) * (r[j * 2] - r[i * 2]));
+          }
+        }
+        xs.sort((a, b) => a - b);
+        cb(row, y, xs, cb2, sb2);
+      }
+    }
+
+    function drawArea(sym, rings, objAngle) {
+      if (sym.fillOn && sym.fillColor !== undefined) addFill(sym.fillColor, rings);
+      if (sym.hatchMode > 0 && sym.hatchDist > 0 && sym.hatchW > 0) {
+        const angs = [sym.hatchA1 / 10]; if (sym.hatchMode >= 2) angs.push(sym.hatchA2 / 10);
+        for (const a of angs) {
+          const ang = (a + objAngle) * Math.PI / 180, segs = [];
+          scanRows(rings, ang, sym.hatchDist, 0, (row, y, xs, c, s) => {
+            for (let i = 0; i + 1 < xs.length; i += 2) segs.push([xs[i] * c - y * s, xs[i] * s + y * c, xs[i + 1] * c - y * s, xs[i + 1] * s + y * c]);
+          });
+          if (segs.length) addStroke(sym.hatchColor, sym.hatchW, 'butt', 'bevel', null, segs, false);
+        }
+      }
+      if (sym.structMode > 0 && sym.els.length && sym.structW > 0 && sym.structH > 0) {
+        const ang = (sym.structAngle / 10 + objAngle) * Math.PI / 180, sw = sym.structW, sh = sym.structH;
+        let count = 0;
+        scanRows(rings, ang, sh, 0, (row, y, xs, c, s) => {
+          if (count > 150000) return;
+          const shift = sym.structMode === 2 && (row & 1) ? sw / 2 : 0;
+          for (let i = 0; i + 1 < xs.length; i += 2) {
+            const k0 = Math.ceil((xs[i] - shift) / sw), k1 = Math.floor((xs[i + 1] - shift) / sw);
+            for (let k = k0; k <= k1; k++) { const px = k * sw + shift; drawElements(sym.els, px * c - y * s, px * s + y * c, ang); count++; }
+          }
+        });
+      }
+      if (sym.borderOn && sym.border) {
+        const b = symbols.get(sym.border);
+        if (b && b.type === 2) for (const r of rings) drawLine(b, r.concat([r[0], r[1]]), true, null);
+      }
+    }
+
+    /* ---------- Objekt ---------- */
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const stats = { objects: 0, skippedText: 0, unknownSym: 0 };
+    for (const oi of objIdx) {
+      if (oi.status !== 1) continue;
+      const p = oi.pos, n = u32(p + 44), ang = i16(p + 6) / 10 * Math.PI / 180;
+      if (p + 56 + n * 8 > buffer.byteLength) continue;
+      const pts = new Array(n);
+      for (let i = 0; i < n; i++) { const x = i32(p + 56 + i * 8), y = i32(p + 60 + i * 8); pts[i] = { x: x >> 8, y: y >> 8, fx: x & 255, fy: y & 255 }; if (pts[i].x < minX) minX = pts[i].x; if (pts[i].x > maxX) maxX = pts[i].x; if (pts[i].y < minY) minY = pts[i].y; if (pts[i].y > maxY) maxY = pts[i].y; }
+      const sym = symbols.get(oi.sym);
+      if (!sym) { stats.unknownSym++; continue; }
+      if (sym.status === 2) { stats.hidden = (stats.hidden || 0) + 1; continue; }
+      stats.objects++;
+      if (oi.type === 1 && sym.type === 1 && n >= 1) drawElements(sym.els, pts[0].x, pts[0].y, ang);
+      else if (oi.type === 2 && sym.type === 2 && n >= 2) {
+        const corners = []; pts.forEach((q, i) => { if (q.fy & 1) corners.push(i); });
+        drawLine(sym, flatten(pts), false, null);
+      } else if (oi.type === 3 && sym.type === 3 && n >= 3) {
+        const rings = []; let cur = [];
+        pts.forEach((q, i) => { if (i && (q.fy & 2)) { rings.push(cur); cur = []; } cur.push(q); });
+        rings.push(cur);
+        drawArea(sym, rings.filter(r => r.length > 2).map(flatten), ang * 180 / Math.PI);
+      } else if (oi.type >= 4) stats.skippedText++;
+    }
+
+    const bounds = printArea || { minX, minY, maxX, maxY };
+    return { version, geo, bounds, colors, layers, stats, symbolCount: symbols.size, objectCount: objIdx.length };
+  }
+
+  /* Bygger Path2D-strängar och ritar lager. ctx måste ha transform satt (1/100 mm, y uppåt). */
+  function finalize(model) {
+    for (const L of model.layers) {
+      L.fillPath = L.fills.join('');
+      L.strokeList = [...L.strokes.values()].map(b => ({ w: b.w, cap: b.cap, join: b.join, dash: b.dash, d: b.pieces.join('') }));
+    }
+    return model;
+  }
+  function draw(ctx, model, hasPath2D) {
+    for (let li = model.layers.length - 1; li >= 0; li--) {
+      const L = model.layers[li];
+      const col = 'rgb(' + L.rgb.join(',') + ')';
+      ctx.globalAlpha = L.alpha;
+      if (L.fillPath) { if (!L._fp) L._fp = new Path2D(L.fillPath); ctx.fillStyle = col; ctx.fill(L._fp, 'nonzero'); }
+      ctx.strokeStyle = col;
+      for (const b of L.strokeList) {
+        if (!b._p) b._p = new Path2D(b.d);
+        ctx.lineWidth = b.w; ctx.lineCap = b.cap; ctx.lineJoin = b.join; ctx.miterLimit = 4;
+        ctx.setLineDash(b.dash || []);
+        ctx.stroke(b._p);
+      }
+    }
+    ctx.globalAlpha = 1; ctx.setLineDash([]);
+  }
+
+  /* Pappersmått (1/100 mm) -> verkliga koordinater (meter) */
+  function paperToWorld(geo, x, y) {
+    const a = geo.angle * Math.PI / 180, k = geo.scale / 100000;
+    return [geo.offX + k * (x * Math.cos(a) + y * Math.sin(a)), geo.offY + k * (-x * Math.sin(a) + y * Math.cos(a))];
+  }
+
+  return { parse, finalize, draw, paperToWorld };
+});
+
+</script>
+<script>
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  const canvas = $('map');
+  const ctx = canvas.getContext('2d');
+  const TAU = Math.PI * 2;
+  const nf0 = new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 0 });
+  const nf1 = new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 1 });
+  const nf5 = new Intl.NumberFormat('sv-SE', { minimumFractionDigits: 5, maximumFractionDigits: 5 });
+
+  let dpr = 1, vw = 0, vh = 0;
+  const view = { s: 1, tx: 0, ty: 0 };
+  let map = null;
+  let pos = null;
+  let px = null;
+  let follow = false;
+  let watchId = null;
+  let wake = null;
+  let raf = 0;
+  let firstFixDone = false;
+  let colors = { bg: '#ddd', accent: '#B8146B', edge: '#999', ink: '#000' };
+
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  /* ---------- Koordinatsystem ---------- */
+
+  const SWEREF_LOCAL = { 3007: 12, 3008: 13.5, 3009: 15, 3010: 16.5, 3011: 18, 3012: 14.25,
+                         3013: 15.75, 3014: 17.25, 3015: 18.75, 3016: 20.25, 3017: 21.75, 3018: 23.25 };
+  const CRS_NAMES = { 3006: 'SWEREF 99 TM', 3857: 'Web Mercator', 4326: 'WGS 84', 3021: 'RT90 2,5 gon V', 2400: 'RT90 2,5 gon V' };
+  const RT90 = '+proj=tmerc +lat_0=0 +lon_0=15.80827777777778 +k=1 +x_0=1500000 +y_0=0 +ellps=bessel +towgs84=414.1,41.3,603.1,-0.855,2.141,-7.023,0 +units=m +no_defs';
+
+  function crsDef(code) {
+    if ([4326, 4258, 4619, 4269, 4152].includes(code)) return '+proj=longlat +datum=WGS84 +no_defs';
+    if (code === 3006) return '+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs';
+    if (SWEREF_LOCAL[code] !== undefined) {
+      return '+proj=tmerc +lat_0=0 +lon_0=' + SWEREF_LOCAL[code] + ' +k=1 +x_0=150000 +y_0=0 +ellps=GRS80 +units=m +no_defs';
+    }
+    if (code === 3021 || code === 2400) return RT90;
+    if (code === 3857 || code === 900913) return '+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs';
+    if (code >= 32601 && code <= 32660) return '+proj=utm +zone=' + (code - 32600) + ' +datum=WGS84 +units=m +no_defs';
+    if (code >= 32701 && code <= 32760) return '+proj=utm +zone=' + (code - 32700) + ' +south +datum=WGS84 +units=m +no_defs';
+    if (code >= 25828 && code <= 25838) return '+proj=utm +zone=' + (code - 25800) + ' +ellps=GRS80 +units=m +no_defs';
+    if (code >= 23028 && code <= 23038) return '+proj=utm +zone=' + (code - 23000) + ' +ellps=intl +towgs84=-87,-98,-121,0,0,0,0 +units=m +no_defs';
+    if (code >= 26901 && code <= 26923) return '+proj=utm +zone=' + (code - 26900) + ' +datum=NAD83 +units=m +no_defs';
+    if (code === 3035) return '+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +units=m +no_defs';
+    if (code === 3034) return '+proj=lcc +lat_1=35 +lat_2=65 +lat_0=52 +lon_0=10 +x_0=4000000 +y_0=2800000 +ellps=GRS80 +units=m +no_defs';
+    try { const d = proj4.defs('EPSG:' + code); if (d) return d; } catch (e) { /* ignore */ }
+    return null;
+  }
+
+  /* ---------- Inläsning av GeoTIFF ---------- */
+
+  function range(arr, nd) {
+    let mn = Infinity, mx = -Infinity;
+    const step = Math.max(1, Math.floor(arr.length / 2e6));
+    for (let i = 0; i < arr.length; i += step) {
+      const v = arr[i];
+      if (v !== v || v === nd) continue;
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    if (mn === Infinity) { mn = 0; mx = 1; }
+    if (mx === mn) mx = mn + 1;
+    return [mn, mx];
+  }
+
+  const tick = () => new Promise(r => {
+    let d = false;
+    const f = () => { if (!d) { d = true; r(); } };
+    requestAnimationFrame(f);
+    setTimeout(f, 60);
+  });
+  function setMsg(t) { const m = $('startMsg'); m.hidden = false; m.textContent = t; }
+  async function status(t) { setMsg(t); await tick(); }
+
+  function describeTiff(img, W, H) {
+    const fd = img.fileDirectory || {};
+    const names = { 1: 'ingen komprimering', 5: 'LZW', 7: 'JPEG', 8: 'Deflate', 32946: 'Deflate', 32773: 'PackBits', 50000: 'Zstd', 34925: 'LZMA' };
+    const comp = names[fd.Compression] || ('komprimering ' + fd.Compression);
+    const th = img.getTileHeight ? img.getTileHeight() : 0;
+    const tiled = !!img.isTiled;
+    let t = 'TIFF ' + nf0.format(W) + ' × ' + nf0.format(H) + ' px, ' + comp + (tiled ? ', rutindelad' : ', remsor om ' + nf0.format(th) + ' rader');
+    if (!tiled && th >= H / 2 && W * H > 30e6) {
+      t += '\nVarning: filen är sparad som en enda stor remsa och måste packas upp helt. Det kan ta lång tid eller krascha på iPhone. Konvertera den med gdal_translate -of COG.';
+    }
+    return t;
+  }
+
+  /* Läser ett fönster ur bilden i remsor och medelvärdesbildar ner till outW x outH.
+     Håller minnesanvändningen låg även för mycket stora TIFF-filer. */
+  async function readDown(img, win, outW, outH, info) {
+    const bands = info.bands;
+    const ww = win[2] - win[0], wh = win[3] - win[1];
+    const fx = ww / outW, fy = wh / outH;
+    const sx = fx >= 4 ? 2 : 1, sy = fy >= 4 ? 2 : 1;
+    const colMap = new Int32Array(ww);
+    const colN = new Uint32Array(outW);
+    for (let x = 0; x < ww; x++) {
+      const ox = Math.min(outW - 1, Math.floor(x / fx));
+      colMap[x] = ox;
+      if (x % sx === 0) colN[ox]++;
+    }
+    const sums = new Float32Array(outW * bands);
+    const th = Math.max(1, (img.getTileHeight && img.getTileHeight()) || 256);
+    const rowsPerChunk = Math.max(th, Math.floor(4e6 / ww / th) * th);
+    let res = null, curOy = -1, nrows = 0;
+
+    const flush = () => {
+      if (curOy >= 0 && nrows > 0 && !info.nearest) {
+        const base = curOy * outW * bands;
+        const add = info.is8 ? 0.5 : 0;
+        for (let ox = 0; ox < outW; ox++) {
+          const n = (colN[ox] * nrows) || 1;
+          for (let c = 0; c < bands; c++) res[base + ox * bands + c] = sums[ox * bands + c] / n + add;
+        }
+      }
+      sums.fill(0);
+      nrows = 0;
+    };
+
+    let y = win[1];
+    while (y < win[3]) {
+      const yEnd = Math.min(win[3], Math.floor(y / th) * th + rowsPerChunk);
+      const o = { window: [win[0], y, win[2], yEnd], interleave: true, resampleMethod: 'nearest' };
+      let r;
+      if (info.ycbcr) r = await img.readRGB(o);
+      else { o.samples = info.samples; r = await img.readRasters(o); }
+      if (!res) {
+        info.is8 = r instanceof Uint8Array || r instanceof Uint8ClampedArray;
+        res = info.is8 ? new Uint8Array(outW * outH * bands) : new Float32Array(outW * outH * bands);
+      }
+      const rows = yEnd - y;
+      for (let rr = 0; rr < rows; rr++) {
+        const wy = y - win[1] + rr;
+        const oy = Math.min(outH - 1, Math.floor(wy / fy));
+        if (oy !== curOy) { flush(); curOy = oy; }
+        const rb = rr * ww * bands;
+        if (info.nearest) {
+          if (nrows === 0) {
+            const base = oy * outW * bands;
+            for (let ox = 0; ox < outW; ox++) {
+              const x = Math.min(ww - 1, Math.floor(ox * fx));
+              for (let c = 0; c < bands; c++) res[base + ox * bands + c] = r[rb + x * bands + c];
+            }
+            nrows = 1;
+          }
+          continue;
+        }
+        if (wy % sy) continue;
+        for (let x = 0; x < ww; x += sx) {
+          const si = rb + x * bands, di = colMap[x] * bands;
+          for (let c = 0; c < bands; c++) sums[di + c] += r[si + c];
+        }
+        nrows++;
+      }
+      y = yEnd;
+      if (info.onProgress) info.onProgress((y - win[1]) / wh);
+      await tick();
+    }
+    flush();
+    return res;
+  }
+
+  function toImageData(res, w, h, info) {
+    const id = new ImageData(w, h);
+    const out = id.data;
+    const n = w * h;
+    if (info.bands === 3) {
+      if (info.is8) {
+        for (let i = 0, j = 0; i < n; i++, j += 4) {
+          const s = i * 3;
+          out[j] = res[s]; out[j + 1] = res[s + 1]; out[j + 2] = res[s + 2]; out[j + 3] = 255;
+        }
+      } else {
+        if (!info.rng) info.rng = range(res, null);
+        const mn = info.rng[0], kk = 255 / (info.rng[1] - info.rng[0]);
+        for (let i = 0, j = 0; i < n; i++, j += 4) {
+          const s = i * 3;
+          out[j] = (res[s] - mn) * kk; out[j + 1] = (res[s + 1] - mn) * kk; out[j + 2] = (res[s + 2] - mn) * kk; out[j + 3] = 255;
+        }
+      }
+    } else if (info.palette) {
+      const cm = info.cmap, size = cm.length / 3;
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        const v = res[i];
+        out[j] = cm[v] >> 8; out[j + 1] = cm[size + v] >> 8; out[j + 2] = cm[2 * size + v] >> 8; out[j + 3] = 255;
+      }
+    } else {
+      if (!info.rng) info.rng = (info.is8 && info.nd === null) ? [0, 255] : range(res, info.nd);
+      const mn = info.rng[0], kk = 255 / (info.rng[1] - info.rng[0]);
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        const v = res[i];
+        if (v !== v || v === info.nd) { out[j + 3] = 0; continue; }
+        let g = (v - mn) * kk;
+        if (info.invert) g = 255 - g;
+        out[j] = out[j + 1] = out[j + 2] = g; out[j + 3] = 255;
+      }
+    }
+    return id;
+  }
+
+  async function loadTiff(file, maxDim, opts) {
+    opts = opts || {};
+    if (typeof GeoTIFF === 'undefined' || typeof proj4 === 'undefined') {
+      throw new Error('Kartbiblioteken kunde inte laddas. Kontrollera internetanslutningen och ladda om sidan.');
+    }
+    let tiff;
+    try { tiff = await GeoTIFF.fromBlob(file); }
+    catch (e) { throw new Error('Filen kunde inte läsas som TIFF.'); }
+
+    const main = await tiff.getImage(0);
+    const W = main.getWidth(), H = main.getHeight();
+    const fd = main.fileDirectory || {};
+    const keys = (main.getGeoKeys ? main.getGeoKeys() : null) || {};
+
+    /* Koordinatsystem */
+    let code = keys.ProjectedCSTypeGeoKey;
+    if (!code || code === 32767) code = keys.GeographicTypeGeoKey;
+    if (!code || code === 32767) code = opts.crs;
+    if (!code || code === 32767) {
+      throw new Error('Kartans koordinatsystem saknar EPSG-kod. Välj koordinatsystem i listan eller spara om filen med ett standardsystem, till exempel SWEREF 99 TM (EPSG:3006).');
+    }
+    const def = crsDef(code);
+    if (!def) {
+      throw new Error('Koordinatsystemet EPSG:' + code + ' stöds inte. Projicera om kartan till SWEREF 99 TM (EPSG:3006), WGS 84 (EPSG:4326) eller Web Mercator (EPSG:3857), till exempel i QGIS eller med gdalwarp.');
+    }
+
+    /* Georeferens: pixel -> kartkoordinat */
+    let aff;
+    let useWorld = false;
+    const mt = fd.ModelTransformation;
+    if (mt && mt.length >= 8) {
+      aff = { a: mt[0], b: mt[1], c: mt[3], d: mt[4], e: mt[5], f: mt[7] };
+    } else {
+      let o, r;
+      try { o = main.getOrigin(); r = main.getResolution(); }
+      catch (e) {
+        if (!opts.world) throw new Error('Filen saknar georeferens. Välj en georefererad TIFF, eller markera även dess världsfil (.tfw).');
+        useWorld = true;
+      }
+      aff = useWorld ? opts.world : { a: r[0], b: 0, c: o[0], d: 0, e: r[1], f: o[1] };
+    }
+    const pointIs = useWorld ? true : keys.GTRasterTypeGeoKey === 2;
+
+    const conv = proj4('EPSG:4326', def);
+    let isGeo = false;
+    try { isGeo = new proj4.Proj(def).projName === 'longlat'; } catch (e) { /* ignore */ }
+
+    /* Bildpyramid (översiktsbilder), störst först */
+    const spp = main.getSamplesPerPixel();
+    const descr = describeTiff(main, W, H);
+    await status(descr);
+    const levels = [{ img: main, W, H }];
+    try {
+      const cnt = await tiff.getImageCount();
+      for (let i = 1; i < cnt; i++) {
+        const im = await tiff.getImage(i);
+        if (im.getSamplesPerPixel() === spp && im.getWidth() < W &&
+            Math.abs(im.getWidth() / im.getHeight() - W / H) < 0.01) {
+          levels.push({ img: im, W: im.getWidth(), H: im.getHeight() });
+        }
+      }
+    } catch (e) { /* använd bara huvudbilden */ }
+    levels.sort((a, b) => b.W - a.W);
+
+    /* Översiktsbild som ryms i telefonens minne */
+    const k = Math.min(1, Math.sqrt(maxDim / (W * H)));
+    const outW = Math.max(1, Math.round(W * k));
+    const outH = Math.max(1, Math.round(H * k));
+    let ov = levels[0];
+    for (const l of levels) { if (l.W >= outW && l.H >= outH) ov = l; }
+
+    const sfd = ov.img.fileDirectory || {};
+    const photo = sfd.PhotometricInterpretation;
+    const info = {
+      bands: (photo === 6 || spp >= 3) ? 3 : 1,
+      samples: spp >= 3 ? [0, 1, 2] : [0],
+      ycbcr: photo === 6,
+      palette: photo === 3 && !!(sfd.ColorMap || fd.ColorMap),
+      cmap: sfd.ColorMap || fd.ColorMap,
+      nearest: photo === 3,
+      invert: photo === 0,
+      nd: main.getGDALNoData ? main.getGDALNoData() : null,
+      is8: true,
+      rng: null
+    };
+
+    const off = document.createElement('canvas');
+    off.width = outW; off.height = outH;
+    info.onProgress = f => setMsg(descr + '\nAvkodar ' + Math.round(f * 100) + ' %');
+    try {
+      const data = await readDown(ov.img, [0, 0, ov.W, ov.H], outW, outH, info);
+      await status(descr + '\nBygger bilden…');
+      off.getContext('2d').putImageData(toImageData(data, outW, outH, info), 0, 0);
+      info.onProgress = null;
+    } catch (e) {
+      throw new Error('Kunde inte avkoda bilden (' + (e && e.message ? e.message : e) + '). Stödda komprimeringar är bland annat LZW, Deflate och JPEG. Prova att spara om filen med Deflate eller LZW, eller välj lägre detaljnivå.');
+    }
+
+    const m = { W, H, aff, conv, isGeo, pointIs, canvas: off, code, name: file.name,
+                pxm: Math.hypot(aff.a, aff.d), fitS: 1, minS: 0.1, maxS: 24, latC: 0,
+                levels, info, detail: null };
+    const c = pxToLonLat(m, W / 2, H / 2);
+    m.latC = c[1];
+    return m;
+  }
+
+  /* ---------- Bild + världsfil, och val av filer ---------- */
+
+  function parseWorld(text) {
+    const l = text.split(/\s+/).filter(Boolean).map(Number);
+    if (l.length < 6 || l.slice(0, 6).some(v => !isFinite(v))) return null;
+    return { a: l[0], d: l[1], b: l[2], e: l[3], c: l[4], f: l[5] };
+  }
+
+  function getCrs() {
+    const v = $('crs').value;
+    return v === 'other' ? parseInt($('crsOther').value, 10) : parseInt(v, 10);
+  }
+
+  async function imageSize(file) {
+    try {
+      const b = new Uint8Array(await file.slice(0, 2 * 1024 * 1024).arrayBuffer());
+      const u16 = i => (b[i] << 8) | b[i + 1];
+      const u32 = i => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+      if (b[0] === 0x89 && b[1] === 0x50) return { W: u32(16), H: u32(20), png: true };
+      if (b[0] === 0xFF && b[1] === 0xD8) {
+        let i = 2;
+        while (i + 9 < b.length) {
+          if (b[i] !== 0xFF) { i++; continue; }
+          const mk = b[i + 1];
+          if (mk === 0xFF) { i++; continue; }
+          if (mk === 0xD8 || mk === 0x01 || (mk >= 0xD0 && mk <= 0xD7)) { i += 2; continue; }
+          if (mk >= 0xC0 && mk <= 0xCF && mk !== 0xC4 && mk !== 0xC8 && mk !== 0xCC) return { H: u16(i + 5), W: u16(i + 7) };
+          i += 2 + u16(i + 2);
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
+  /* Strömmande PNG-avkodare: packar upp rad för rad och förminskar direkt,
+     så att en bild på hundratals miljoner pixlar aldrig ligger i minnet. */
+  async function parsePng(file) {
+    if (typeof DecompressionStream === 'undefined') return null;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    if (buf.length < 33 || buf[0] !== 0x89 || buf[1] !== 0x50) return null;
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let pos = 8, W = 0, H = 0, depth = 0, ct = 0, inter = 0;
+    const idat = [];
+    let pal = new Uint8Array(768);
+    while (pos + 8 <= buf.length) {
+      const len = dv.getUint32(pos), type = String.fromCharCode(buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]);
+      const d0 = pos + 8;
+      if (type === 'IHDR') { W = dv.getUint32(d0); H = dv.getUint32(d0 + 4); depth = buf[d0 + 8]; ct = buf[d0 + 9]; inter = buf[d0 + 12]; }
+      else if (type === 'PLTE') { pal = new Uint8Array(768); pal.set(buf.subarray(d0, d0 + Math.min(len, 768))); }
+      else if (type === 'IDAT') idat.push(buf.subarray(d0, d0 + len));
+      else if (type === 'IEND') break;
+      pos = d0 + len + 4;
+    }
+    const chans = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[ct];
+    if (!W || !H || !chans || inter !== 0) return null;
+    if (!(depth === 8 || (ct === 3 && depth < 8))) return null;
+    return { W, H, depth, ct, pal, idat, stride: Math.ceil(W * chans * depth / 8), bpp: Math.max(1, (chans * depth) >> 3) };
+  }
+
+  /* Avkodar ett fönster [x0,y0,x1,y1] ur PNG:n till outW x outH pixlar. */
+  async function decodePngRegion(png, win, outW, outH, onProgress) {
+    const { W, depth, ct, pal, idat, stride, bpp } = png;
+    const ww = win[2] - win[0], wh = win[3] - win[1];
+    const fx = ww / outW, fy = wh / outH;
+    const sx = fx >= 4 ? 2 : 1, sy = fy >= 4 ? 2 : 1;
+    const colMap = new Int32Array(ww), colN = new Uint32Array(outW);
+    for (let x = 0; x < ww; x++) {
+      const ox = Math.min(outW - 1, Math.floor(x / fx));
+      colMap[x] = ox;
+      if (x % sx === 0) colN[ox]++;
+    }
+
+    const ds = new DecompressionStream('deflate');
+    const writer = ds.writable.getWriter();
+    (async () => {
+      try { for (const c of idat) await writer.write(c); await writer.close(); }
+      catch (e) { /* läsaren ser felet */ }
+    })();
+    const reader = ds.readable.getReader();
+    let cur = new Uint8Array(0), cp = 0;
+    const readInto = async (dst, n) => {
+      let got = 0;
+      while (got < n) {
+        if (cp >= cur.length) {
+          const r = await reader.read();
+          if (r.done) return false;
+          cur = r.value; cp = 0; continue;
+        }
+        const take = Math.min(n - got, cur.length - cp);
+        dst.set(cur.subarray(cp, cp + take), got);
+        got += take; cp += take;
+      }
+      return true;
+    };
+
+    const id = new ImageData(outW, outH);
+    const out = id.data;
+    const line = new Uint8Array(stride + 1);
+    let row = new Uint8Array(stride), prev = new Uint8Array(stride);
+    const sums = new Float32Array(outW * 3);
+    let curOy = -1, nrows = 0;
+    const flush = () => {
+      if (curOy >= 0 && nrows > 0) {
+        for (let ox = 0; ox < outW; ox++) {
+          const n = (colN[ox] * nrows) || 1, o = (curOy * outW + ox) * 4;
+          out[o] = sums[ox * 3] / n; out[o + 1] = sums[ox * 3 + 1] / n; out[o + 2] = sums[ox * 3 + 2] / n; out[o + 3] = 255;
+        }
+      }
+      sums.fill(0); nrows = 0;
+    };
+
+    const yLast = win[3];
+    for (let y = 0; y < yLast; y++) {
+      if (!(await readInto(line, stride + 1))) throw new Error('PNG-data slutade i förtid');
+      const ft = line[0];
+      if (ft === 0) { row.set(line.subarray(1)); }
+      else if (ft === 1) { for (let i = 0; i < stride; i++) row[i] = line[i + 1] + (i >= bpp ? row[i - bpp] : 0); }
+      else if (ft === 2) { for (let i = 0; i < stride; i++) row[i] = line[i + 1] + prev[i]; }
+      else if (ft === 3) { for (let i = 0; i < stride; i++) row[i] = line[i + 1] + (((i >= bpp ? row[i - bpp] : 0) + prev[i]) >> 1); }
+      else {
+        for (let i = 0; i < stride; i++) {
+          const a = i >= bpp ? row[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
+          const pp = a + b - c, pa = Math.abs(pp - a), pb = Math.abs(pp - b), pc = Math.abs(pp - c);
+          row[i] = line[i + 1] + ((pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c));
+        }
+      }
+      if (y >= win[1]) {
+        const wy = y - win[1];
+        const oy = Math.min(outH - 1, Math.floor(wy / fy));
+        if (oy !== curOy) { flush(); curOy = oy; }
+        if (wy % sy === 0) {
+          for (let xi = 0; xi < ww; xi += sx) {
+            const x = win[0] + xi, di = colMap[xi] * 3;
+            let r, g, b;
+            if (ct === 2) { const i = x * 3; r = row[i]; g = row[i + 1]; b = row[i + 2]; }
+            else if (ct === 6) {
+              const i = x * 4, al = row[i + 3];
+              if (al === 255) { r = row[i]; g = row[i + 1]; b = row[i + 2]; }
+              else { const w = 255 - al; r = (row[i] * al + 255 * w) / 255; g = (row[i + 1] * al + 255 * w) / 255; b = (row[i + 2] * al + 255 * w) / 255; }
+            } else if (ct === 3) {
+              let idx;
+              if (depth === 8) idx = row[x];
+              else { const bit = x * depth; idx = (row[bit >> 3] >> (8 - depth - (bit & 7))) & ((1 << depth) - 1); }
+              r = pal[idx * 3]; g = pal[idx * 3 + 1]; b = pal[idx * 3 + 2];
+            } else if (ct === 0) { r = g = b = row[x]; }
+            else { const al = row[x * 2 + 1], w = 255 - al; r = g = b = (row[x * 2] * al + 255 * w) / 255; }
+            sums[di] += r; sums[di + 1] += g; sums[di + 2] += b;
+          }
+          nrows++;
+        }
+      }
+      const t = prev; prev = row; row = t;
+      if (y % 256 === 255) { if (onProgress) onProgress(y / yLast); await tick(); }
+    }
+    flush();
+    try { reader.cancel(); } catch (e) { /* ignore */ }
+    return id;
+  }
+
+  async function decodePngDown(file, budget, onProgress) {
+    const png = await parsePng(file);
+    if (!png) return null;
+    const k = Math.min(1, Math.sqrt(budget / (png.W * png.H)));
+    const outW = Math.max(1, Math.round(png.W * k)), outH = Math.max(1, Math.round(png.H * k));
+    const id = await decodePngRegion(png, [0, 0, png.W, png.H], outW, outH, onProgress);
+    const canvas = document.createElement('canvas');
+    canvas.width = outW; canvas.height = outH;
+    canvas.getContext('2d').putImageData(id, 0, 0);
+    return { W: png.W, H: png.H, canvas, png };
+  }
+
+  async function loadImage(file, world, maxDim, code) {
+    if (typeof proj4 === 'undefined') {
+      throw new Error('Kartbiblioteken kunde inte laddas. Kontrollera internetanslutningen och ladda om sidan.');
+    }
+    if (!code) throw new Error('Ange kartans koordinatsystem (EPSG-kod).');
+    const def = crsDef(code);
+    if (!def) {
+      throw new Error('Koordinatsystemet EPSG:' + code + ' stöds inte. Välj SWEREF 99 TM, RT90, WGS 84 eller Web Mercator, eller ett UTM-system.');
+    }
+    const size = await imageSize(file);
+    const descr = size ? ('Bild ' + nf0.format(size.W) + ' × ' + nf0.format(size.H) + ' px (' + nf0.format(size.W * size.H / 1e6) + ' megapixlar)') : 'Bild';
+    await status(descr);
+
+    let off = null, W = 0, H = 0, pngInfo = null;
+    if (size && size.png) {
+      try {
+        const r = await decodePngDown(file, maxDim, f => setMsg(descr + '\nAvkodar ' + Math.round(f * 100) + ' %'));
+        if (r) { off = r.canvas; W = r.W; H = r.H; pngInfo = r.png; }
+      } catch (e) { off = null; }
+    }
+    if (!off) {
+      await status(descr + '\nAvkodar med webbläsaren…');
+      let bmp = null;
+      if (size) {
+        const k0 = Math.min(1, Math.sqrt(maxDim / (size.W * size.H)));
+        if (k0 < 1) {
+          try {
+            bmp = await createImageBitmap(file, { resizeWidth: Math.round(size.W * k0), resizeHeight: Math.round(size.H * k0), resizeQuality: 'high' });
+          } catch (e) { bmp = null; }
+        }
+      }
+      if (!bmp) {
+        try { bmp = await createImageBitmap(file); }
+        catch (e) { throw new Error('Bilden kunde inte läsas. Den kan vara för stor för telefonens minne. Exportera den i lägre upplösning (till exempel högst 6 000 px på långsidan) eller använd GeoTIFF.'); }
+      }
+      W = size ? size.W : bmp.width; H = size ? size.H : bmp.height;
+      const k = Math.min(1, Math.sqrt(maxDim / (bmp.width * bmp.height)));
+      off = document.createElement('canvas');
+      off.width = Math.max(1, Math.round(bmp.width * k));
+      off.height = Math.max(1, Math.round(bmp.height * k));
+      const octx = off.getContext('2d');
+      octx.imageSmoothingQuality = 'high';
+      octx.drawImage(bmp, 0, 0, off.width, off.height);
+      if (bmp.close) bmp.close();
+    }
+
+    const conv = proj4('EPSG:4326', def);
+    let isGeo = false;
+    try { isGeo = new proj4.Proj(def).projName === 'longlat'; } catch (e) { /* ignore */ }
+    const m = { W, H, aff: world, conv, isGeo, pointIs: true, canvas: off, code, name: file.name,
+                pxm: Math.hypot(world.a, world.d), fitS: 1, minS: 0.1, maxS: 16, latC: 0,
+                png: pngInfo, detail: null };
+    const c = pxToLonLat(m, W / 2, H / 2);
+    m.latC = c[1];
+    return m;
+  }
+
+  /* ---------- OCAD-kartor (.ocd, version 10 till 2018) ---------- */
+
+  function renderOcd(model, vec, win, ow, oh) {
+    const c = document.createElement('canvas');
+    c.width = ow; c.height = oh;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, ow, oh);
+    const sx = ow / (win[2] - win[0]), sy = oh / (win[3] - win[1]);
+    g.setTransform(sx / vec.u, 0, 0, -sy / vec.u, -(vec.minX / vec.u + win[0]) * sx, (vec.maxY / vec.u - win[1]) * sy);
+    OCD.draw(g, model);
+    return c;
+  }
+
+  async function loadOcd(file, budget, crsSel) {
+    if (typeof proj4 === 'undefined') throw new Error('Kartbiblioteken kunde inte laddas. Kontrollera internetanslutningen och ladda om sidan.');
+    await status('OCAD-fil: ' + file.name + ' (' + nf1.format(file.size / 1048576) + ' MB)\nLäser filen…');
+    const buf = await file.arrayBuffer();
+    await status('OCAD-fil: ' + file.name + '\nTolkar symboler och objekt…');
+    let model;
+    try { model = OCD.finalize(OCD.parse(buf)); }
+    catch (e) { throw new Error(e && e.message ? e.message : 'OCAD-filen kunde inte tolkas.'); }
+    const geo = model.geo;
+    if (!geo || !geo.real) throw new Error('OCAD-kartan saknar verkliga koordinater. Slå på Real World Coordinates under Skala och koordinatsystem i OCAD och spara om filen.');
+    const code = geo.epsg || crsSel;
+    const def = code ? crsDef(code) : null;
+    if (!def) throw new Error('Kartans koordinatsystem (EPSG:' + code + ') stöds inte. Välj ett koordinatsystem i listan.');
+    const b = model.bounds, ppm = 300 / 25.4, u = 100 / ppm;
+    const W = Math.max(1, Math.round((b.maxX - b.minX) / u)), H = Math.max(1, Math.round((b.maxY - b.minY) / u));
+    const k0 = geo.scale / 100000, an = geo.angle * Math.PI / 180, ca = Math.cos(an), sa = Math.sin(an);
+    const aff = { a: k0 * ca * u, b: -k0 * sa * u, c: geo.offX + k0 * (b.minX * ca + b.maxY * sa),
+                  d: -k0 * sa * u, e: -k0 * ca * u, f: geo.offY + k0 * (-b.minX * sa + b.maxY * ca) };
+    const k = Math.min(1, Math.sqrt(budget / (W * H)));
+    const outW = Math.max(1, Math.round(W * k)), outH = Math.max(1, Math.round(H * k));
+    await status('OCAD-fil: ' + file.name + '\nRitar kartan (' + nf0.format(model.stats.objects) + ' objekt)…');
+    const vec = { minX: b.minX, maxY: b.maxY, u };
+    const canvas = renderOcd(model, vec, [0, 0, W, H], outW, outH);
+    const conv = proj4('EPSG:4326', def);
+    let isGeo = false;
+    try { isGeo = new proj4.Proj(def).projName === 'longlat'; } catch (e) { /* ignore */ }
+    const m = { W, H, aff, conv, isGeo, pointIs: false, canvas, code, name: file.name,
+                pxm: Math.hypot(aff.a, aff.d), fitS: 1, minS: 0.1, maxS: 24, latC: 0,
+                ocd: model, vec, detail: null };
+    const c = pxToLonLat(m, W / 2, H / 2);
+    m.latC = c[1];
+    return m;
+  }
+
+  async function loadMap(files, maxDim) {
+    const ext = f => (f.name.split('.').pop() || '').toLowerCase();
+    const ocdFile = files.find(f => ext(f) === 'ocd');
+    if (ocdFile) return loadOcd(ocdFile, maxDim, getCrs());
+    const tif = files.find(f => ['tif', 'tiff'].includes(ext(f)));
+    const img = files.find(f => ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext(f)));
+    const wf = files.find(f => ext(f) === 'wld' || /^[a-z]{2,3}w$/.test(ext(f)));
+    let world = null;
+    if (wf) {
+      world = parseWorld(await wf.text());
+      if (!world) throw new Error('Världsfilen ' + wf.name + ' kunde inte tolkas.');
+    }
+    const crs = getCrs();
+    if (tif) return loadTiff(tif, maxDim, { world, crs });
+    if (img) {
+      if (!world) throw new Error('Bilden saknar världsfil. Markera både bildfilen och världsfilen (.pgw, .jgw eller .wld) när du väljer filer.');
+      return loadImage(img, world, maxDim, crs);
+    }
+    throw new Error('Välj en GeoTIFF, eller en bild tillsammans med dess världsfil.');
+  }
+
+  /* ---------- Omvandlingar ---------- */
+
+  function lonLatToPx(m, lon, lat) {
+    const xy = m.conv.forward([lon, lat]);
+    const { a, b, c, d, e, f } = m.aff;
+    const det = a * e - b * d;
+    const dx = xy[0] - c, dy = xy[1] - f;
+    let col = (e * dx - b * dy) / det;
+    let row = (-d * dx + a * dy) / det;
+    if (m.pointIs) { col += 0.5; row += 0.5; }
+    return [col, row];
+  }
+
+  function pxToLonLat(m, col, row) {
+    if (m.pointIs) { col -= 0.5; row -= 0.5; }
+    const { a, b, c, d, e, f } = m.aff;
+    const x = a * col + b * row + c;
+    const y = d * col + e * row + f;
+    return m.conv.inverse([x, y]);
+  }
+
+  function metersPerPx() {
+    if (!map) return 1;
+    if (map.isGeo) return Math.abs(map.aff.a) * 111320 * Math.cos(map.latC * Math.PI / 180);
+    return map.pxm;
+  }
+
+  function distBearing(lat1, lon1, lat2, lon2) {
+    const R = 6371000, r = Math.PI / 180;
+    const p1 = lat1 * r, p2 = lat2 * r, dl = (lon2 - lon1) * r;
+    const h = Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+    const dist = 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+    const y = Math.sin(dl) * Math.cos(p2);
+    const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+    return { dist, bearing: (Math.atan2(y, x) / r + 360) % 360 };
+  }
+
+  const DIRS = ['norr', 'nordost', 'öster', 'sydost', 'söder', 'sydväst', 'väster', 'nordväst'];
+  const fmtDist = m => m < 1000 ? nf0.format(m) + ' m' : nf1.format(m / 1000) + ' km';
+
+  /* ---------- Ritning ---------- */
+
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement);
+    const g = n => cs.getPropertyValue(n).trim();
+    colors = { bg: g('--map-bg') || '#ddd', accent: g('--accent') || '#B8146B', edge: g('--line') || '#999', ink: g('--ink') || '#000' };
+    schedule();
+  }
+
+  function schedule() { if (!raf) raf = requestAnimationFrame(draw); }
+
+  function draw() {
+    raf = 0;
+    const cw = canvas.width, ch = canvas.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = colors.bg;
+    ctx.fillRect(0, 0, cw, ch);
+    if (!map) return;
+
+    const kk = dpr * view.s;
+    ctx.setTransform(kk, 0, 0, kk, dpr * view.tx, dpr * view.ty);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(map.canvas, 0, 0, map.W, map.H);
+    const dt = map.detail;
+    if (dt) ctx.drawImage(dt.canvas, 0, 0, dt.canvas.width, dt.canvas.height, dt.x0, dt.y0, dt.x1 - dt.x0, dt.y1 - dt.y0);
+    ctx.lineWidth = 1 / kk * dpr;
+    ctx.strokeStyle = colors.edge;
+    ctx.strokeRect(0, 0, map.W, map.H);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (pos && px) {
+      const x = px[0] * view.s + view.tx;
+      const y = px[1] * view.s + view.ty;
+      const r = pos.acc / metersPerPx() * view.s;
+      if (r > 14) {
+        ctx.beginPath(); ctx.arc(x, y, r, 0, TAU);
+        ctx.globalAlpha = 0.15; ctx.fillStyle = colors.accent; ctx.fill();
+        ctx.globalAlpha = 0.6; ctx.lineWidth = 1.5; ctx.strokeStyle = colors.accent; ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      if (pos.heading != null && !isNaN(pos.heading) && pos.speed > 0.8) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(pos.heading * Math.PI / 180);
+        ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(9, -12); ctx.lineTo(-9, -12); ctx.closePath();
+        ctx.fillStyle = colors.accent; ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+        ctx.restore();
+      }
+      ctx.beginPath(); ctx.arc(x, y, 12, 0, TAU); ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, 8.5, 0, TAU); ctx.fillStyle = colors.accent; ctx.fill();
+    }
+    updateScale();
+    if (map.levels || map.png || map.ocd) requestDetail();
+  }
+
+  function updateScale() {
+    const mpsp = metersPerPx() / view.s;
+    const target = mpsp * 110;
+    const nice = [1, 2, 5];
+    let mag = Math.pow(10, Math.floor(Math.log10(target)));
+    let best = mag;
+    for (const mult of [1, 2, 5, 10]) { if (mult * mag <= target) best = mult * mag; }
+    $('scaleBar').style.width = Math.max(20, best / mpsp) + 'px';
+    $('scaleLabel').textContent = best >= 1000 ? nf1.format(best / 1000) + ' km' : nf0.format(best) + ' m';
+  }
+
+  function resize() {
+    const r = $('stage').getBoundingClientRect();
+    vw = r.width; vh = r.height;
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    canvas.width = Math.round(vw * dpr);
+    canvas.height = Math.round(vh * dpr);
+    canvas.style.width = vw + 'px';
+    canvas.style.height = vh + 'px';
+    schedule();
+  }
+
+  function fit() {
+    if (!map) return;
+    map.fitS = Math.min((vw - 24) / map.W, (vh - 24) / map.H);
+    map.minS = map.fitS * 0.5;
+    view.s = map.fitS;
+    view.tx = (vw - map.W * view.s) / 2;
+    view.ty = (vh - map.H * view.s) / 2;
+    schedule();
+  }
+
+  function centerOn(p) {
+    view.tx = vw / 2 - p[0] * view.s;
+    view.ty = vh / 2 - p[1] * view.s;
+  }
+
+  function zoomAt(cx, cy, f) {
+    if (!map) return;
+    const ns = clamp(view.s * f, map.minS, map.maxS);
+    const ff = ns / view.s;
+    view.tx = cx - (cx - view.tx) * ff;
+    view.ty = cy - (cy - view.ty) * ff;
+    view.s = ns;
+    if (follow && px) centerOn(px);
+    schedule();
+  }
+
+  function setFollow(v) {
+    follow = v;
+    $('followBtn').setAttribute('aria-pressed', v ? 'true' : 'false');
+    if (v && px) { centerOn(px); schedule(); }
+  }
+
+  /* ---------- Detaljlager: skarp bild för den del som syns ---------- */
+
+  let detailTimer = 0, detailBusy = false, detailAgain = false, detailSeq = 0;
+
+  function requestDetail() {
+    clearTimeout(detailTimer);
+    detailTimer = setTimeout(loadDetail, 250);
+  }
+
+  async function loadDetail() {
+    if (!map || !(map.levels || map.png || map.ocd)) return;
+    if (detailBusy) { detailAgain = true; return; }
+    const m = map, seq = ++detailSeq;
+    const target = view.s * dpr;
+    const vx0 = Math.max(0, -view.tx / view.s), vy0 = Math.max(0, -view.ty / view.s);
+    const vx1 = Math.min(m.W, (vw - view.tx) / view.s), vy1 = Math.min(m.H, (vh - view.ty) / view.s);
+    if (vx1 - vx0 < 2 || vy1 - vy0 < 2) return;
+    if (target <= (m.canvas.width / m.W) * 1.05) return;
+    const d = m.detail;
+    if (d && d.x0 <= vx0 && d.y0 <= vy0 && d.x1 >= vx1 && d.y1 >= vy1 && d.wanted >= target * 0.95) return;
+
+    detailBusy = true;
+    $('busy').hidden = false;
+    try {
+      const marg = (m.png || m.ocd) ? 0.4 : 0.2;
+      const mx = (vx1 - vx0) * marg, my = (vy1 - vy0) * marg;
+      const x0 = Math.max(0, vx0 - mx), y0 = Math.max(0, vy0 - my);
+      const x1 = Math.min(m.W, vx1 + mx), y1 = Math.min(m.H, vy1 + my);
+      const want = m.ocd ? target : Math.min(1, target);
+      let lv = null, rx = 1, ry = 1, win;
+      if (m.png || m.ocd) {
+        win = [Math.floor(x0), Math.floor(y0), Math.min(m.W, Math.ceil(x1)), Math.min(m.H, Math.ceil(y1))];
+      } else {
+        lv = m.levels[0];
+        for (const l of m.levels) { if (l.W / m.W >= want * 0.999) lv = l; }
+        rx = lv.W / m.W; ry = lv.H / m.H;
+        win = [Math.floor(x0 * rx), Math.floor(y0 * ry), Math.min(lv.W, Math.ceil(x1 * rx)), Math.min(lv.H, Math.ceil(y1 * ry))];
+      }
+      const ww = win[2] - win[0], wh = win[3] - win[1];
+      let ow = Math.round((x1 - x0) * want), oh = Math.round((y1 - y0) * want);
+      const cap = 6e6;
+      if (ow * oh > cap) { const f = Math.sqrt(cap / (ow * oh)); ow = Math.floor(ow * f); oh = Math.floor(oh * f); }
+      if (m.ocd) { ow = Math.max(1, ow); oh = Math.max(1, oh); } else { ow = Math.max(1, Math.min(ow, ww)); oh = Math.max(1, Math.min(oh, wh)); }
+      if (m.ocd) {
+        const c0 = renderOcd(m.ocd, m.vec, win, ow, oh);
+        if (seq !== detailSeq || map !== m) return;
+        m.detail = { canvas: c0, x0: win[0], y0: win[1], x1: win[2], y1: win[3], wanted: target };
+        schedule();
+        return;
+      }
+      let id;
+      if (m.png) id = await decodePngRegion(m.png, win, ow, oh, null);
+      else id = toImageData(await readDown(lv.img, win, ow, oh, m.info), ow, oh, m.info);
+      if (seq !== detailSeq || map !== m) return;
+      const c = document.createElement('canvas');
+      c.width = ow; c.height = oh;
+      c.getContext('2d').putImageData(id, 0, 0);
+      m.detail = { canvas: c, x0: win[0] / rx, y0: win[1] / ry, x1: win[2] / rx, y1: win[3] / ry, wanted: target };
+      schedule();
+    } catch (e) {
+      /* behåll översiktsbilden */
+    } finally {
+      detailBusy = false;
+      $('busy').hidden = true;
+      if (detailAgain) { detailAgain = false; requestDetail(); }
+    }
+  }
+
+  /* ---------- Touch och mus ---------- */
+
+  const ptrs = new Map();
+  let pinch = null;
+  let moved = 0;
+
+  function pinchInfo() {
+    const rect = canvas.getBoundingClientRect();
+    const [p, q] = [...ptrs.values()];
+    return { d: Math.hypot(p.x - q.x, p.y - q.y) || 1, cx: (p.x + q.x) / 2 - rect.left, cy: (p.y + q.y) / 2 - rect.top };
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    canvas.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    moved = 0;
+    if (ptrs.size === 2) pinch = pinchInfo();
+  });
+  canvas.addEventListener('pointermove', e => {
+    const p = ptrs.get(e.pointerId);
+    if (!p || !map) return;
+    const dx = e.clientX - p.x, dy = e.clientY - p.y;
+    p.x = e.clientX; p.y = e.clientY;
+    if (ptrs.size === 1) {
+      view.tx += dx; view.ty += dy;
+      moved += Math.abs(dx) + Math.abs(dy);
+      if (moved > 6 && follow) setFollow(false);
+      schedule();
+    } else if (ptrs.size === 2) {
+      const cur = pinchInfo();
+      if (pinch) {
+        zoomAt(cur.cx, cur.cy, cur.d / pinch.d);
+        if (!follow) { view.tx += cur.cx - pinch.cx; view.ty += cur.cy - pinch.cy; }
+      }
+      pinch = cur;
+      schedule();
+    }
+  });
+  const endPtr = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; };
+  canvas.addEventListener('pointerup', endPtr);
+  canvas.addEventListener('pointercancel', endPtr);
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.0015));
+  }, { passive: false });
+
+  /* ---------- GPS ---------- */
+
+  function setGps(kind, label) {
+    $('dot').dataset.kind = kind;
+    $('gpsLabel').textContent = label;
+    $('gpsBtn').textContent = watchId !== null ? 'Stoppa GPS' : 'Starta GPS';
+  }
+
+  function showHint(t) {
+    const h = $('gpsHint');
+    h.hidden = !t;
+    h.textContent = t || '';
+  }
+
+  async function requestWake() {
+    try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch (e) { /* ignore */ }
+  }
+  function releaseWake() {
+    try { if (wake) wake.release(); } catch (e) { /* ignore */ }
+    wake = null;
+  }
+
+  function startGps() {
+    if (!('geolocation' in navigator)) {
+      setGps('err', 'GPS saknas');
+      showHint('Webbläsaren saknar stöd för platsinformation.');
+      return;
+    }
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    showHint('');
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+    setGps('wait', 'Söker position…');
+    requestWake();
+  }
+
+  function stopGps() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    releaseWake();
+    setGps('off', 'GPS av');
+  }
+
+  function onErr(err) {
+    if (err.code === 1) {
+      stopGps();
+      setGps('err', 'Platsåtkomst nekad');
+      showHint('Tillåt plats för webbläsaren i telefonens inställningar och tryck på Starta GPS. Om sidan visas inbäddad i en annan app, öppna den i en egen webbläsarflik. Teknisk orsak: ' + (err.message || ('kod ' + err.code)));
+    } else if (err.code === 2) {
+      setGps('err', 'Position saknas just nu');
+      showHint('Platsinformation är inte tillgänglig. Kontrollera att platstjänster är påslagna. Teknisk orsak: ' + (err.message || ('kod ' + err.code)));
+    } else {
+      setGps('wait', 'Väntar på GPS-signal…');
+      showHint('Det tar lång tid att få en position. Gå ut under bar himmel.');
+    }
+  }
+
+  function onPos(p) {
+    const c = p.coords;
+    pos = { lat: c.latitude, lon: c.longitude, acc: c.accuracy || 0, heading: c.heading, speed: c.speed };
+    setGps(pos.acc <= 25 ? 'ok' : 'weak', 'GPS ±' + nf0.format(pos.acc) + ' m' + (pos.acc > 25 ? ' (svag)' : ''));
+    showHint('');
+    if (map) {
+      px = lonLatToPx(map, pos.lon, pos.lat);
+      const inside = px[0] >= 0 && px[0] <= map.W && px[1] >= 0 && px[1] <= map.H;
+      if (!firstFixDone) {
+        firstFixDone = true;
+        if (inside) {
+          view.s = clamp(Math.max(vw * metersPerPx() / 500, map.fitS), map.minS, map.maxS);
+          setFollow(true);
+        }
+      }
+      if (follow) centerOn(px);
+    }
+    updateHud();
+    schedule();
+  }
+
+  function updateHud() {
+    const coords = $('coords'), outside = $('outside');
+    if (!pos) { coords.hidden = true; outside.hidden = true; return; }
+    coords.hidden = false;
+    $('coordLL').textContent = nf5.format(pos.lat) + '°N  ' + nf5.format(pos.lon) + '°E';
+    if (map && !map.isGeo) {
+      try {
+        const xy = map.conv.forward([pos.lon, pos.lat]);
+        const nm = CRS_NAMES[map.code] || ('EPSG:' + map.code);
+        $('coordProj').textContent = nm + ':  Ö ' + nf0.format(xy[0]) + '  N ' + nf0.format(xy[1]);
+        $('coordProj').hidden = false;
+      } catch (e) { $('coordProj').hidden = true; }
+    } else {
+      $('coordProj').hidden = true;
+    }
+    if (map && px) {
+      const inside = px[0] >= 0 && px[0] <= map.W && px[1] >= 0 && px[1] <= map.H;
+      if (inside) { outside.hidden = true; }
+      else {
+        const edge = pxToLonLat(map, clamp(px[0], 0, map.W), clamp(px[1], 0, map.H));
+        const db = distBearing(edge[1], edge[0], pos.lat, pos.lon);
+        const dir = DIRS[Math.round(db.bearing / 45) % 8];
+        outside.textContent = 'Du är utanför kartan, ' + fmtDist(db.dist) + ' åt ' + dir + '.';
+        outside.hidden = false;
+      }
+    }
+  }
+
+  /* ---------- Gränssnitt ---------- */
+
+  function showStart(mode, msg) {
+    $('start').hidden = false;
+    const m = $('startMsg');
+    m.hidden = !msg;
+    m.textContent = msg || '';
+    $('backBtn').hidden = !map;
+    $('pickBtn').disabled = mode === 'loading';
+    $('pickBtn').textContent = mode === 'loading' ? 'Läser in kartan…' : (mode === 'error' ? 'Välj andra filer' : 'Välj kartfil(er)');
+  }
+
+  function hideStart() {
+    $('start').hidden = true;
+    for (const id of ['hud', 'toolbar', 'zoom', 'scale']) $(id).hidden = false;
+    resize();
+  }
+
+  async function openFile(files) {
+    showStart('loading', 'Filerna är mottagna: ' + files.map(f => f.name + ' (' + nf1.format(f.size / 1048576) + ' MB)').join(', ') + '.');
+    await new Promise(r => setTimeout(r, 40));
+    try {
+      for (const f of files) {
+        await Promise.race([
+          f.slice(0, 1024).arrayBuffer(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000))
+        ]);
+      }
+    } catch (e) {
+      showStart('error', 'Telefonen kan inte läsa filen just nu. Om den ligger i OneDrive eller iCloud är den troligen inte hämtad till telefonen ännu. Spara den först på telefonen (Filer, På min iPhone) och välj den därifrån.');
+      return;
+    }
+    try {
+      const m = await loadMap(files, +$('quality').value);
+      map = m;
+      detailSeq++;
+      pos = pos; px = null; firstFixDone = false;
+      hideStart();
+      fit();
+      setFollow(false);
+      if (pos) { px = lonLatToPx(map, pos.lon, pos.lat); }
+      if (watchId === null) startGps();
+      else if (pos) { firstFixDone = false; onPos({ coords: { latitude: pos.lat, longitude: pos.lon, accuracy: pos.acc, heading: pos.heading, speed: pos.speed } }); }
+      updateHud();
+      schedule();
+    } catch (err) {
+      showStart('error', err && err.message ? err.message : String(err));
+    }
+  }
+
+  $('crs').addEventListener('change', () => { $('crsOtherField').hidden = $('crs').value !== 'other'; });
+  $('pickBtn').addEventListener('click', () => $('file').click());
+  $('changeBtn').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', e => {
+    const f = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (f.length) openFile(f);
+  });
+  $('backBtn').addEventListener('click', () => { if (map) hideStart(); });
+  $('gpsBtn').addEventListener('click', () => { watchId === null ? startGps() : stopGps(); });
+  $('followBtn').addEventListener('click', () => setFollow(!follow));
+  $('fitBtn').addEventListener('click', () => { setFollow(false); fit(); });
+  $('zin').addEventListener('click', () => zoomAt(vw / 2, vh / 2, 1.6));
+  $('zout').addEventListener('click', () => zoomAt(vw / 2, vh / 2, 1 / 1.6));
+
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && watchId !== null) requestWake(); });
+  window.addEventListener('resize', resize);
+  if (window.ResizeObserver) new ResizeObserver(resize).observe($('stage'));
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  if (mq.addEventListener) mq.addEventListener('change', readColors);
+  new MutationObserver(readColors).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* fungerar ändå online */ });
+  }
+
+  readColors();
+  resize();
+})();
+</script>
+</body>
+</html>
