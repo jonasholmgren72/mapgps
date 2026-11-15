@@ -811,16 +811,58 @@
     return id;
   }
 
+  /* Neutraliserar rader med ogiltig fälttyp i TIFF:ens tagglistor (en del exportprogram skriver sådana). */
+  function sanitizeTiff(buf) {
+    if (buf.byteLength < 16) return false;
+    const dv = new DataView(buf);
+    const bo = dv.getUint16(0);
+    if (bo !== 0x4949 && bo !== 0x4D4D) return false;
+    const le = bo === 0x4949;
+    if (dv.getUint16(2, le) !== 42) return false;
+    let changed = false;
+    const seen = new Set();
+    const queue = [dv.getUint32(4, le)];
+    while (queue.length) {
+      const off = queue.pop();
+      if (!off || off + 2 > buf.byteLength || seen.has(off)) continue;
+      seen.add(off);
+      const n = dv.getUint16(off, le);
+      for (let i = 0; i < n; i++) {
+        const e = off + 2 + i * 12;
+        if (e + 12 > buf.byteLength) break;
+        const tag = dv.getUint16(e, le), type = dv.getUint16(e + 2, le);
+        if (type < 1 || (type > 12 && type < 16) || type > 18) {
+          dv.setUint16(e + 2, 1, le); dv.setUint32(e + 4, 0, le); dv.setUint32(e + 8, 0, le);
+          changed = true;
+        } else if ((tag === 34665 || tag === 34853 || tag === 40965 || tag === 330) && type === 4) {
+          const cnt = dv.getUint32(e + 4, le);
+          if (cnt === 1) queue.push(dv.getUint32(e + 8, le));
+        }
+      }
+      const next = off + 2 + n * 12;
+      if (next + 4 <= buf.byteLength) queue.push(dv.getUint32(next, le));
+    }
+    return changed;
+  }
+
   async function loadTiff(file, maxDim, opts) {
     opts = opts || {};
     if (typeof GeoTIFF === 'undefined' || typeof proj4 === 'undefined') {
       throw new Error('Kartbiblioteken kunde inte laddas. Kontrollera internetanslutningen och ladda om sidan.');
     }
-    let tiff;
-    try { tiff = await GeoTIFF.fromBlob(file); }
-    catch (e) { throw new Error('Filen kunde inte läsas som TIFF.'); }
+    let tiff, main;
+    try { tiff = await GeoTIFF.fromBlob(file); main = await tiff.getImage(0); }
+    catch (e1) {
+      let fixed = false;
+      try {
+        if (file.size <= 400 * 1048576) {
+          const buf = await file.arrayBuffer();
+          if (sanitizeTiff(buf)) { tiff = await GeoTIFF.fromArrayBuffer(buf); main = await tiff.getImage(0); fixed = true; }
+        }
+      } catch (e2) { fixed = false; }
+      if (!fixed) throw new Error('Filen kunde inte läsas som TIFF (' + (e1 && e1.message ? e1.message : e1) + '). Prova att exportera den med 24-bitars färg, eller som PNG med världsfil.');
+    }
 
-    const main = await tiff.getImage(0);
     const W = main.getWidth(), H = main.getHeight();
     const fd = main.fileDirectory || {};
     const keys = (main.getGeoKeys ? main.getGeoKeys() : null) || {};
