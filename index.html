@@ -234,7 +234,7 @@
     <p class="fine">Stora GeoTIFF-filer visas först i lägre upplösning och skärps när du zoomar in. Filerna läses bara i telefonen och skickas inte någon annanstans. Koordinatsystem som stöds är bland annat SWEREF 99 TM, RT90, WGS 84, Web Mercator och UTM.</p>
     <details class="fine">
       <summary style="cursor:pointer;font-weight:700;color:var(--ink)">Har du en OCD-fil (OCAD)?</summary>
-      <p style="margin-top:8px">Välj .ocd-filen direkt. Det fungerar för OCAD 10, 11, 12 och 2018, och kartan måste ha verkliga koordinater (Real World Coordinates). Texter visas inte ännu, och dolda symboler i OCAD hoppas över. Äldre OCAD-filer (version 9 och tidigare) kan inte läsas.</p>
+      <p style="margin-top:8px">Välj .ocd-filen direkt. Det fungerar för OCAD 10, 11, 12 och 2018, och kartan måste ha verkliga koordinater (Real World Coordinates). Hela kartan visas, även stora kartdatabaser. Den ritas först som översikt och skärps när du zoomar in. Texter visas inte ännu, och dolda symboler i OCAD hoppas över. Äldre OCAD-filer (version 9 och tidigare) kan inte läsas.</p>
     </details>
   </div>
 </section>
@@ -280,7 +280,7 @@
     }
     const objIdx = [];
     for (let p = firstObj; p; p = u32(p)) {
-      for (let i = 0; i < 256; i++) { const o = p + 4 + i * 40, pos = u32(o + 16); if (pos) objIdx.push({ pos, sym: i32(o + 24), type: u8(o + 28), status: u8(o + 30) }); }
+      for (let i = 0; i < 256; i++) { const o = p + 4 + i * 40, pos = u32(o + 16); if (pos) objIdx.push({ pos, sym: i32(o + 24), type: u8(o + 28), status: u8(o + 30), lx: i32(o) >> 8, ly: i32(o + 4) >> 8, ux: i32(o + 8) >> 8, uy: i32(o + 12) >> 8 }); }
     }
 
     /* ---------- Parametersträngar ---------- */
@@ -362,7 +362,16 @@
     }
 
     /* ---------- Ritlager ---------- */
-    const layers = colors.map(c => ({ n: c.n, rgb: c.rgb, alpha: c.alpha, fills: [], strokes: new Map() }));
+    let layers = null, UPP = 0;
+    function newLayers() { layers = colors.map(c => ({ n: c.n, rgb: c.rgb, alpha: c.alpha, fills: [], strokes: new Map() })); }
+    newLayers();
+    function decim(p, d) {
+      if (p.length <= 8) return p;
+      const out = [p[0], p[1]]; let lx = p[0], ly = p[1]; const d2 = d * d;
+      for (let i = 2; i < p.length - 2; i += 2) { const dx = p[i] - lx, dy = p[i + 1] - ly; if (dx * dx + dy * dy >= d2) { out.push(p[i], p[i + 1]); lx = p[i]; ly = p[i + 1]; } }
+      out.push(p[p.length - 2], p[p.length - 1]);
+      return out;
+    }
     function layerOf(n) { const i = colorIndex.get(n); return i === undefined ? null : layers[i]; }
     const fmt = v => Math.round(v);
     function pathStr(poly, close) {
@@ -462,6 +471,9 @@
 
     function drawLine(sym, poly, closed, cornerIdx) {
       if (poly.length < 4) return;
+      if (UPP > 4) poly = decim(poly, UPP * 0.7);
+      if (poly.length < 4) return;
+      const coarse = UPP > 60;
       const cap = sym.style === 1 ? 'round' : (sym.style & 2) ? 'square' : 'butt';
       const join = (sym.style & 4) ? 'miter' : (sym.style & 1) ? 'round' : 'bevel';
       const dashed = sym.mainLen > 0 && sym.mainGap > 0;
@@ -475,7 +487,7 @@
       }
       const cum = cumLen(poly), total = cum[cum.length - 1];
       if (total <= 0) return;
-      if (sym.primEls.length && sym.mainLen > 0 && !dashed) {
+      if (!coarse && sym.primEls.length && sym.mainLen > 0 && !dashed) {
         const usable = total - sym.distStart - sym.distEnd;
         if (usable > 0) {
           const n = Math.max(1, Math.round(usable / sym.mainLen)), step = usable / n;
@@ -486,9 +498,9 @@
           }
         }
       }
-      if (sym.startEls.length) { const q = at(poly, cum, 0); drawElements(sym.startEls, q.x, q.y, q.a); }
-      if (sym.endEls.length) { const q = at(poly, cum, total); drawElements(sym.endEls, q.x, q.y, q.a); }
-      if (sym.cornerEls.length && cornerIdx) for (const ci of cornerIdx) { if (ci <= 0 || ci >= poly.length / 2 - 1) continue; const q = at(poly, cum, cum[ci]); drawElements(sym.cornerEls, q.x, q.y, q.a); }
+      if (!coarse && sym.startEls.length) { const q = at(poly, cum, 0); drawElements(sym.startEls, q.x, q.y, q.a); }
+      if (!coarse && sym.endEls.length) { const q = at(poly, cum, total); drawElements(sym.endEls, q.x, q.y, q.a); }
+      if (!coarse && sym.cornerEls.length && cornerIdx) for (const ci of cornerIdx) { if (ci <= 0 || ci >= poly.length / 2 - 1) continue; const q = at(poly, cum, cum[ci]); drawElements(sym.cornerEls, q.x, q.y, q.a); }
     }
 
     /* Scanlinje-hjälp för ytor: even-odd. rings är platta [x,y,...] */
@@ -515,8 +527,9 @@
     }
 
     function drawArea(sym, rings, objAngle) {
+      if (UPP > 4) rings = rings.map(r => decim(r, UPP * 0.7));
       if (sym.fillOn && sym.fillColor !== undefined) addFill(sym.fillColor, rings);
-      if (sym.hatchMode > 0 && sym.hatchDist > 0 && sym.hatchW > 0) {
+      if (sym.hatchMode > 0 && sym.hatchDist > UPP * 1.5 && sym.hatchW > 0) {
         const angs = [sym.hatchA1 / 10]; if (sym.hatchMode >= 2) angs.push(sym.hatchA2 / 10);
         for (const a of angs) {
           const ang = (a + objAngle) * Math.PI / 180, segs = [];
@@ -526,7 +539,7 @@
           if (segs.length) addStroke(sym.hatchColor, sym.hatchW, 'butt', 'bevel', null, segs, false);
         }
       }
-      if (sym.structMode > 0 && sym.els.length && sym.structW > 0 && sym.structH > 0) {
+      if (sym.structMode > 0 && sym.els.length && sym.structW > UPP * 1.5 && sym.structH > UPP * 1.5) {
         const ang = (sym.structAngle / 10 + objAngle) * Math.PI / 180, sw = sym.structW, sh = sym.structH;
         let count = 0;
         scanRows(rings, ang, sh, 0, (row, y, xs, c, s) => {
@@ -544,58 +557,99 @@
       }
     }
 
-    /* ---------- Objekt ---------- */
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    const stats = { objects: 0, skippedText: 0, unknownSym: 0 };
+    /* ---------- Objekt: index i minnet, geometri tolkas först vid ritning ---------- */
+    const stats = { objects: 0, unknownSym: 0, hidden: 0 };
+    const vP = [], vS = [], vT = [], vLX = [], vLY = [], vUX = [], vUY = [];
     for (const oi of objIdx) {
       if (oi.status !== 1) continue;
-      const p = oi.pos, n = u32(p + 44), ang = i16(p + 6) / 10 * Math.PI / 180;
-      if (p + 56 + n * 8 > buffer.byteLength) continue;
-      const pts = new Array(n);
-      for (let i = 0; i < n; i++) { const x = i32(p + 56 + i * 8), y = i32(p + 60 + i * 8); pts[i] = { x: x >> 8, y: y >> 8, fx: x & 255, fy: y & 255 }; if (pts[i].x < minX) minX = pts[i].x; if (pts[i].x > maxX) maxX = pts[i].x; if (pts[i].y < minY) minY = pts[i].y; if (pts[i].y > maxY) maxY = pts[i].y; }
       const sym = symbols.get(oi.sym);
       if (!sym) { stats.unknownSym++; continue; }
-      if (sym.status === 2) { stats.hidden = (stats.hidden || 0) + 1; continue; }
-      stats.objects++;
-      if (oi.type === 1 && sym.type === 1 && n >= 1) drawElements(sym.els, pts[0].x, pts[0].y, ang);
-      else if (oi.type === 2 && sym.type === 2 && n >= 2) {
-        const corners = []; pts.forEach((q, i) => { if (q.fy & 1) corners.push(i); });
-        drawLine(sym, flatten(pts), false, null);
-      } else if (oi.type === 3 && sym.type === 3 && n >= 3) {
-        const rings = []; let cur = [];
-        pts.forEach((q, i) => { if (i && (q.fy & 2)) { rings.push(cur); cur = []; } cur.push(q); });
-        rings.push(cur);
-        drawArea(sym, rings.filter(r => r.length > 2).map(flatten), ang * 180 / Math.PI);
-      } else if (oi.type >= 4) stats.skippedText++;
+      if (sym.status === 2) { stats.hidden++; continue; }
+      vP.push(oi.pos); vS.push(sym); vT.push(oi.type);
+      vLX.push(oi.lx); vLY.push(oi.ly); vUX.push(oi.ux); vUY.push(oi.uy);
     }
-
-    const bounds = printArea || { minX, minY, maxX, maxY };
-    return { version, geo, bounds, colors, layers, stats, symbolCount: symbols.size, objectCount: objIdx.length };
-  }
-
-  /* Bygger Path2D-strängar och ritar lager. ctx måste ha transform satt (1/100 mm, y uppåt). */
-  function finalize(model) {
-    for (const L of model.layers) {
-      L.fillPath = L.fills.join('');
-      L.strokeList = [...L.strokes.values()].map(b => ({ w: b.w, cap: b.cap, join: b.join, dash: b.dash, d: b.pieces.join('') }));
+    const objectCount = objIdx.length;
+    stats.objects = vP.length;
+    let full = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    for (let i = 0; i < vP.length; i++) {
+      if (vLX[i] < full.minX) full.minX = vLX[i]; if (vLY[i] < full.minY) full.minY = vLY[i];
+      if (vUX[i] > full.maxX) full.maxX = vUX[i]; if (vUY[i] > full.maxY) full.maxY = vUY[i];
     }
-    return model;
-  }
-  function draw(ctx, model, hasPath2D) {
-    for (let li = model.layers.length - 1; li >= 0; li--) {
-      const L = model.layers[li];
-      const col = 'rgb(' + L.rgb.join(',') + ')';
-      ctx.globalAlpha = L.alpha;
-      if (L.fillPath) { if (!L._fp) L._fp = new Path2D(L.fillPath); ctx.fillStyle = col; ctx.fill(L._fp, 'nonzero'); }
-      ctx.strokeStyle = col;
-      for (const b of L.strokeList) {
-        if (!b._p) b._p = new Path2D(b.d);
-        ctx.lineWidth = b.w; ctx.lineCap = b.cap; ctx.lineJoin = b.join; ctx.miterLimit = 4;
-        ctx.setLineDash(b.dash || []);
-        ctx.stroke(b._p);
+    if (!(full.maxX > full.minX)) full = printArea || { minX: 0, minY: 0, maxX: 1000, maxY: 1000 };
+
+    function build(sel, upp) {
+      UPP = upp; newLayers();
+      for (const i of sel) {
+        const sym = vS[i], type = vT[i], p = vP[i];
+        if (upp > 0) {
+          if (Math.max(vUX[i] - vLX[i], vUY[i] - vLY[i]) < upp * 0.8) continue;
+          if (sym.type === 2 && sym.width < upp * 0.3 && !sym.dblMode && !sym.primEls.length && !sym.startEls.length && !sym.endEls.length) continue;
+        }
+        const n = u32(p + 44), ang = i16(p + 6) / 10 * Math.PI / 180;
+        if (p + 56 + n * 8 > buffer.byteLength) continue;
+        const pts = new Array(n);
+        for (let k = 0; k < n; k++) { const x = i32(p + 56 + k * 8), y = i32(p + 60 + k * 8); pts[k] = { x: x >> 8, y: y >> 8, fx: x & 255, fy: y & 255 }; }
+        if (type === 1 && sym.type === 1 && n >= 1) drawElements(sym.els, pts[0].x, pts[0].y, ang);
+        else if (type === 2 && sym.type === 2 && n >= 2) drawLine(sym, flatten(pts), false, null);
+        else if (type === 3 && sym.type === 3 && n >= 3) {
+          const rings = []; let cur = [];
+          pts.forEach((q, k) => { if (k && (q.fy & 2)) { rings.push(cur); cur = []; } cur.push(q); });
+          rings.push(cur);
+          drawArea(sym, rings.filter(r => r.length > 2).map(flatten), ang * 180 / Math.PI);
+        }
       }
     }
-    ctx.globalAlpha = 1; ctx.setLineDash([]);
+
+    function drawLayers(g, ls) {
+      for (let li = ls.length - 1; li >= 0; li--) {
+        const L = ls[li];
+        if (!L.fills.length && !L.strokes.size) continue;
+        const col = 'rgb(' + L.rgb.join(',') + ')';
+        g.globalAlpha = L.alpha;
+        if (L.fills.length) { g.fillStyle = col; g.fill(new Path2D(L.fills.join('')), 'nonzero'); }
+        g.strokeStyle = col;
+        for (const b of L.strokes.values()) {
+          g.lineWidth = b.w; g.lineCap = b.cap; g.lineJoin = b.join; g.miterLimit = 4;
+          g.setLineDash(b.dash || []);
+          g.stroke(new Path2D(b.pieces.join('')));
+        }
+      }
+      g.globalAlpha = 1; g.setLineDash([]);
+    }
+
+    /* Ritar fönstret win = [minX, minY, maxX, maxY] (pappersenheter, 1/100 mm) på g.
+       g måste ha en transform som avbildar pappersenheter på bildpunkter. upp = enheter per bildpunkt. */
+    async function render(g, win, upp, onProgress) {
+      const m = 400 + upp * 2, sel = [];
+      for (let i = 0; i < vP.length; i++) {
+        if (!(vUX[i] < win[0] - m || vLX[i] > win[2] + m || vUY[i] < win[1] - m || vLY[i] > win[3] + m)) sel.push(i);
+      }
+      const nt = Math.max(1, Math.ceil(sel.length / 20000));
+      const ww = win[2] - win[0], wh = win[3] - win[1];
+      const gx = Math.max(1, Math.min(nt, Math.round(Math.sqrt(nt * ww / wh)))), gy = Math.max(1, Math.ceil(nt / gx));
+      const ov = upp * 2;
+      let done = 0;
+      for (let ty = 0; ty < gy; ty++) {
+        for (let tx = 0; tx < gx; tx++) {
+          const x0 = win[0] + ww * tx / gx - ov, x1 = win[0] + ww * (tx + 1) / gx + ov;
+          const y0 = win[1] + wh * ty / gy - ov, y1 = win[1] + wh * (ty + 1) / gy + ov;
+          const sub = sel.filter(i => !(vUX[i] < x0 - m || vLX[i] > x1 + m || vUY[i] < y0 - m || vLY[i] > y1 + m));
+          if (sub.length) {
+            build(sub, upp);
+            g.save(); g.beginPath(); g.rect(x0, y0, x1 - x0, y1 - y0); g.clip();
+            drawLayers(g, layers);
+            g.restore();
+            layers = null;
+          }
+          done++;
+          if (onProgress) onProgress(done / (gx * gy), sel.length);
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+      newLayers();
+    }
+
+    return { version, geo, bounds: full, printArea, colors, stats, symbolCount: symbols.size, objectCount, render };
   }
 
   /* Pappersmått (1/100 mm) -> verkliga koordinater (meter) */
@@ -604,7 +658,7 @@
     return [geo.offX + k * (x * Math.cos(a) + y * Math.sin(a)), geo.offY + k * (-x * Math.sin(a) + y * Math.cos(a))];
   }
 
-  return { parse, finalize, draw, paperToWorld };
+  return { parse, open: parse, paperToWorld };
 });
 
 </script>
@@ -1189,14 +1243,15 @@
 
   /* ---------- OCAD-kartor (.ocd, version 10 till 2018) ---------- */
 
-  function renderOcd(model, vec, win, ow, oh) {
+  async function renderOcd(model, vec, win, ow, oh, onProgress) {
     const c = document.createElement('canvas');
     c.width = ow; c.height = oh;
     const g = c.getContext('2d');
     g.fillStyle = '#fff'; g.fillRect(0, 0, ow, oh);
     const sx = ow / (win[2] - win[0]), sy = oh / (win[3] - win[1]);
     g.setTransform(sx / vec.u, 0, 0, -sy / vec.u, -(vec.minX / vec.u + win[0]) * sx, (vec.maxY / vec.u - win[1]) * sy);
-    OCD.draw(g, model);
+    const paper = [vec.minX + win[0] * vec.u, vec.maxY - win[3] * vec.u, vec.minX + win[2] * vec.u, vec.maxY - win[1] * vec.u];
+    await model.render(g, paper, vec.u / sx, onProgress);
     return c;
   }
 
@@ -1206,7 +1261,7 @@
     const buf = await file.arrayBuffer();
     await status('OCAD-fil: ' + file.name + '\nTolkar symboler och objekt…');
     let model;
-    try { model = OCD.finalize(OCD.parse(buf)); }
+    try { model = OCD.open(buf); }
     catch (e) { throw new Error(e && e.message ? e.message : 'OCAD-filen kunde inte tolkas.'); }
     const geo = model.geo;
     if (!geo || !geo.real) throw new Error('OCAD-kartan saknar verkliga koordinater. Slå på Real World Coordinates under Skala och koordinatsystem i OCAD och spara om filen.');
@@ -1220,9 +1275,10 @@
                   d: -k0 * sa * u, e: -k0 * ca * u, f: geo.offY + k0 * (-b.minX * sa + b.maxY * ca) };
     const k = Math.min(1, Math.sqrt(budget / (W * H)));
     const outW = Math.max(1, Math.round(W * k)), outH = Math.max(1, Math.round(H * k));
-    await status('OCAD-fil: ' + file.name + '\nRitar kartan (' + nf0.format(model.stats.objects) + ' objekt)…');
+    const descr = 'OCAD-fil: ' + file.name + '\n' + nf0.format(model.stats.objects) + ' synliga objekt, ' + nf0.format(Math.round((b.maxX - b.minX) / 100 * geo.scale / 1e6)) + ' × ' + nf0.format(Math.round((b.maxY - b.minY) / 100 * geo.scale / 1e6)) + ' km';
+    await status(descr + '\nRitar översikten…');
     const vec = { minX: b.minX, maxY: b.maxY, u };
-    const canvas = renderOcd(model, vec, [0, 0, W, H], outW, outH);
+    const canvas = await renderOcd(model, vec, [0, 0, W, H], outW, outH, f => setMsg(descr + '\nRitar översikten ' + Math.round(f * 100) + ' %'));
     const conv = proj4('EPSG:4326', def);
     let isGeo = false;
     try { isGeo = new proj4.Proj(def).projName === 'longlat'; } catch (e) { /* ignore */ }
@@ -1450,7 +1506,7 @@
       if (ow * oh > cap) { const f = Math.sqrt(cap / (ow * oh)); ow = Math.floor(ow * f); oh = Math.floor(oh * f); }
       if (m.ocd) { ow = Math.max(1, ow); oh = Math.max(1, oh); } else { ow = Math.max(1, Math.min(ow, ww)); oh = Math.max(1, Math.min(oh, wh)); }
       if (m.ocd) {
-        const c0 = renderOcd(m.ocd, m.vec, win, ow, oh);
+        const c0 = await renderOcd(m.ocd, m.vec, win, ow, oh, null);
         if (seq !== detailSeq || map !== m) return;
         m.detail = { canvas: c0, x0: win[0], y0: win[1], x1: win[2], y1: win[3], wanted: target };
         schedule();
