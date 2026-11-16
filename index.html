@@ -736,7 +736,8 @@
     requestAnimationFrame(f);
     setTimeout(f, 60);
   });
-  function setMsg(t) { const m = $('startMsg'); m.hidden = false; m.textContent = t; }
+  let lastStatus = '';
+  function setMsg(t) { lastStatus = t; const m = $('startMsg'); m.hidden = false; m.textContent = t; }
   async function status(t) { setMsg(t); await tick(); }
 
   function describeTiff(img, W, H) {
@@ -1728,7 +1729,8 @@
       updateHud();
       schedule();
     } catch (err) {
-      showStart('error', err && err.message ? err.message : String(err));
+      const step = String(lastStatus).split('\n').pop();
+      showStart('error', (err && err.message ? err.message : String(err)) + '\n\nTeknisk info: ' + (err && err.name ? err.name : 'Fel') + ' vid "' + step + '"');
     }
   }
 
